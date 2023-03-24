@@ -1,0 +1,227 @@
+//
+// Created by chenkaihuang on 6/7/22.
+//
+
+
+#ifndef C_CODE_ALGORITHM_H
+#define C_CODE_ALGORITHM_H
+
+
+#include <math.h>
+#include <string.h>
+#include "utils.h"
+#include <fstream>
+#include <iostream>
+#include <assert.h>
+#include <time.h>
+//#include <cblas.h>
+#include <omp.h>
+//#include "mkl.h"
+//#include "mkl_solvers_ee.h"
+#include <Eigen/Sparse>
+
+#define mfloat double
+#define NUM_THREADS_OpenMP 8
+
+typedef struct {
+    bool isEmpty;
+    Eigen::SimplicialLLT<Eigen::SparseMatrix<mfloat>> LLTsolver;
+} linearSolver;
+
+typedef struct {
+    int nRow;
+    int nCol;
+    mfloat* vec;
+} Mat;
+
+typedef struct {
+    int number;
+    int* vec;
+} spVec_int;
+
+typedef struct {
+    double *x,*r,*z,*p,*Ap;
+    int dim_n, dim_d, max_iter;
+    double tol;
+} CG_struct;
+
+typedef struct {
+    int nRow;
+    int nCol;
+    mfloat* value;
+    int* rowStart;
+    int* rowLength;
+    int* column;
+} spR;
+
+/// read binary file
+void read_bin(const char *lpFileName, mfloat* X, int len);
+void write_bin(const char *lpFileName, int* X, int len);
+void write_bin(const char *lpFileName, mfloat* X, int len);
+/// projection on to an Unit Ball. (proximal mapping of conjugate of weighted l2 norm)
+void proj_l2(const mfloat* input, mfloat weight, mfloat* output, int len, mfloat& norm_input, bool& rr);
+
+/// weighted l2 norm, column wise for matrix input (m-by-n). Matrix is stored in column order for (one column's) continuous memory.
+void proj_l2_mat(const mfloat* input, const mfloat* weight, mfloat* output, int m, int n, mfloat* norm_input, bool* rr, bool byRow = true);
+/// vector 2-norm
+mfloat norm2(const mfloat* x, int len);
+
+/// distance 2-norm
+mfloat distance(const mfloat* x, const mfloat* y, int len);
+
+/// matrix 2-norm
+mfloat norm2_mat(const mfloat* x, int m, int n);
+
+/// z = y + a*x. a can be 1 and -1. z is output. z can be y.
+void axpy(mfloat a, const mfloat* x, const mfloat* y, mfloat* z, int len);
+/// z = y + a*x'. a can be 1 and -1. z is output. z can be y.
+void axpyT(mfloat a, const mfloat* x, const mfloat* y, mfloat* z, int m, int n);
+
+/// axpy matrix
+void axpy_mat(const mfloat a, const mfloat* x, mfloat* y, int m, int n);
+
+/// z = b*y + a*x
+void axpby2(const mfloat a, const mfloat* x, const mfloat b, const mfloat* y, mfloat* z, const int len);
+
+void axpy_R(const mfloat* a, const mfloat* x, const mfloat* y, mfloat* z, int m, int n, bool byRow = true);
+
+/// z = x.*y, dot product. z can be y.
+mfloat* xdoty(const mfloat* x, const mfloat* y, int len);
+
+/// matrix dot product.
+mfloat* xdoty_mat(const mfloat* x, const mfloat* y, int m, int n);
+
+/// z = <x, y>, inner product. (x^T y)
+mfloat xTy(const mfloat* x, const mfloat* y, int len);
+
+/// z = <1, x>, sum of x.
+mfloat sum(const mfloat* x, int len);
+
+/// compute the k-nearest neighbours of each column (x m-by-n). k_nearest and distance are output (k-by-n) including the center column.
+void knnsearch(const mfloat* x, int k, int m, int n, int* k_nearest, mfloat* dist);
+
+/** compute the weight (|E| vector) and construct the Node-Arc matrix (2-by-|E| array)
+    input x (m-by-n), return the number of |E|
+ */
+
+/// Bmap: B'*X', x is m-by-n matrix, B is Node-Arc matrix (n-by-|E|)
+void Bmap(const mfloat* XT, spR BT, mfloat* XB);
+
+/// BTmap: B*X', x is |E|-dim vector, B is Node-Arc matrix (n-by-|E|)
+void BTmap(const mfloat* XT, spR B, mfloat* XBT);
+
+/// get dense transpose
+Mat get_transpose(Mat X);
+
+/// get dense transpose
+void get_transpose(const mfloat* X, mfloat* output, int m, int n);
+
+/// get the sparse row mode of Node-Arc matrix B (n-by-|E|, represented in 2-by-|E| array), for transpose use.
+void get_spR(const int* NodeArcMatrix, spR* B, int num);
+
+/// get the sparse row mode of Node-Arc matrix B (n-by-|E|, represented in 2-by-|E| array)
+spR get_BT(int num, int n, spR BT);
+
+
+/// sparse matrix vector times for row order matrix
+void spMV_R(spR A, const mfloat* x, int m, int n, mfloat* Ax);
+
+/// sparse matrix vector transpose-times for column order matrix
+void partial_spMV_2(spR A, const mfloat* x, int m, int n, mfloat* Ax, spVec_int nzidx);
+
+/// sparse matrix vector times for column order matrix
+//void spMV_C(spC A, Mat x, int m, int n, mfloat* Ax);
+
+/// sum column for m-by-n matrix
+void sum(const mfloat* X, mfloat* output, int m, int n);
+
+/// row norm for m-by-n matrix
+void norm_R(const mfloat* X, mfloat* output, int m, int n, bool byRow = true);
+
+/// row xdoty for m-by-n matrix
+mfloat* xdoty_R(const mfloat* X, const mfloat* Y, int m, int n, bool byRow = true);
+
+void create_find_step();
+
+/// find the step length
+void find_step();
+
+/// arrange memory for PCG
+void create_PCG();
+
+/// Preconditioned Conjugate gradient method for AX = RHS, matrix level.
+void PCG(const mfloat* x0, const mfloat* rhs, CG_struct* CG_space, mfloat* output);
+
+/// arrange memory for My_CG
+void create_My_CG();
+
+/// Compute M*y for CG
+void My_CG();
+
+/// create dense m-by-n matrix
+Mat creat_Mat(int m, int n);
+
+/// print Matrix
+void print_Mat(const mfloat* X, int m, int n);
+
+void partial_spMV_R(spR A, const mfloat* x, int m, int n, mfloat* Ax, spVec_int nzidx);
+
+/// get submatrix of B
+spR B_sub_Row(spVec_int nzidx, spR BT);
+
+void create_SNAL();
+
+void SNAL_new();
+
+void create_SSNCG();
+
+/// semismooth Newton
+void SSNCG_new();
+
+/// Ly for semismooth Newton subproblem
+mfloat obj_val_SSN();
+
+/// initialize SNAL
+void initial_SNAL();
+
+/// collect infeasibility
+bool collect_infeasibility();
+
+/// primal objective value for original problem
+mfloat primal_obj();
+
+/// dual objective value for original problem
+mfloat dual_obj();
+
+/// check termination for subproblem
+bool check_termination_SSN();
+
+/// update sigma
+void update_sigma();
+
+/// print sparse matrix
+void print_spM(spR input);
+
+/// create eigen sparse matrix
+Eigen::SparseMatrix<mfloat> get_eigen_spMat(spR BT);
+
+/// compute the L^{-1} * r;
+void precond_CG(const mfloat *input, mfloat *output, int m, int n);
+
+/// initialize Eigen variable for cholesky.
+void initial_Eigen();
+
+/// create ADMM variables
+void create_ADMM();
+
+/// ADMM for warm-start
+void ADMM();
+
+/// update sigma in ADMM
+void update_sigma_admm();
+
+void Runexperiment_xTy();
+
+void writeCOO();
+
+#endif //C_CODE_ALGORITHM_H
