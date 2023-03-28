@@ -475,13 +475,13 @@ void PCG(const mfloat* x0, const mfloat* rhs, CG_struct* CG_space, mfloat* outpu
 //        return x_pcg;
     }
 
-    Eigen_solve(r_pcg, z_pcg, n, d);
+    precond_CG(CG_space);
     vMemcpy(z_pcg, n*d, p_pcg);
 
     // GPU
     std::chrono::steady_clock::time_point time0_mycg = time_now();
     My_CG();
-    mycgTime += time_since(time0_mycg);
+    CG_space->cgTime += time_since(time0_mycg);
 
     // GPU
     mfloat s = xTy(p_pcg, Ap_pcg, n*d);
@@ -489,19 +489,19 @@ void PCG(const mfloat* x0, const mfloat* rhs, CG_struct* CG_space, mfloat* outpu
     mfloat t = rsold/s;
 
     axpy(t, p_pcg, x_pcg, x_pcg, n*d);
-    for (int k = 1; k < par.maxit + 1; ++k) {
+    for (int k = 1; k < CG_space->max_iter + 1; ++k) {
         axpy(-t, Ap_pcg, r_pcg, r_pcg, n*d);
         res_temp = norm2(r_pcg, n*d);
 //        std::cout << k << ' ' << res_temp << std::endl;
         if (res_temp < tol) {
-            cgNum += k;
+            CG_space->nCGs += k;
             printf("      %3d", k);
 //            std::cout << "CG: quit at iteration " << k << std::endl;
             vMemcpy(x_pcg, n*d, output);
             return;
 //            return x_pcg;
         }
-        precondfun(r_pcg, z_pcg, n, d);
+        precond_CG(CG_space);
         mfloat rsnew = xTy(r_pcg, z_pcg, n*d);
         mfloat B = rsnew/rsold;
         int iNUM = n*d;
@@ -510,7 +510,7 @@ void PCG(const mfloat* x0, const mfloat* rhs, CG_struct* CG_space, mfloat* outpu
 
         std::chrono::steady_clock::time_point time0_mycg = time_now();
         My_CG();
-        mycgTime += time_since(time0_mycg);
+        CG_space->cgTime += time_since(time0_mycg);
 
         s = xTy(p_pcg, Ap_pcg, n*d);
         t = rsold/s;
@@ -596,7 +596,7 @@ spR B_sub_Row(spVec_int nzidx, spR BT) {
         // main part
         for (int idx = 0; idx < num; ++idx) {
             int i = nzidxv[idx];
-            assert(i < Ainput.BT.nRow);
+            assert(i < BT.nRow);
             for (int j = colStart[i]; j < colStart[i+1]; ++j) {
                 int newIndex = rowStart[row[j] + 1]++;
                 newValue[newIndex] = oldValue[j];
@@ -655,10 +655,10 @@ bool check_termination_SSN(int iter) {
 
 
 void update_sigma(mfloat primfeas, mfloat dualfeas, int iter) {
-    if (primfeas < dualfeas)
-        primWin++;
-    else
-        dualWin++;
+//    if (primfeas < dualfeas)
+//        primWin++;
+//    else
+//        dualWin++;
 
     int sigma_update_iter = 2;
     if (iter < 10)
@@ -672,13 +672,13 @@ void update_sigma(mfloat primfeas, mfloat dualfeas, int iter) {
 
     mfloat factor = 5.0;
     if (iter % sigma_update_iter == 0) {
-        if (primWin > std::max(1.0, 1.2*dualWin)) {
-            primWin = 0;
-            par.sigma = std::max(1e-4, par.sigma/factor);
-        } else if (dualWin > std::max(1.0, 1.2*primWin)) {
-            dualWin = 0;
-            par.sigma = std::min(1e5, par.sigma*factor);
-        }
+//        if (primWin > std::max(1.0, 1.2*dualWin)) {
+//            primWin = 0;
+//            par.sigma = std::max(1e-4, par.sigma/factor);
+//        } else if (dualWin > std::max(1.0, 1.2*primWin)) {
+//            dualWin = 0;
+//            par.sigma = std::min(1e5, par.sigma*factor);
+//        }
     }
 }
 
@@ -708,16 +708,16 @@ Eigen::SparseMatrix<mfloat> get_eigen_spMat(spR BT) {
 
 }
 
-void precond_CG(const mfloat *input, mfloat *output, int m, int n) {
-    if (LLT.isEmpty) {
-        vMemcpy(input, m*n, output);
+void precond_CG(CG_struct* CG_space) {
+    if (CG_space->LLT.isEmpty) {
+        vMemcpy(CG_space->r, CG_space->dim_n*CG_space->dim_d, CG_space->z);
     } else {
-#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(n,m,input,LLT,output, temp_pre, temp2_pre)
-        for (int i = 0; i < n; ++i) {
-            vMemcpy(input+i*m, m, temp_pre[i].data());
-            temp2_pre[i] = LLT.LLTsolver.solve(temp_pre[i]);
-            vMemcpy(temp2_pre[i].data(), m, output+i*m);
-        }
+//#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(n,m,input,LLT,output, temp_pre, temp2_pre)
+//        for (int i = 0; i < n; ++i) {
+//            vMemcpy(input+i*m, m, temp_pre[i].data());
+//            temp2_pre[i] = LLT.LLTsolver.solve(temp_pre[i]);
+//            vMemcpy(temp2_pre[i].data(), m, output+i*m);
+//        }
     }
 }
 
@@ -726,22 +726,22 @@ Eigen::SparseMatrix<mfloat> In, wInum, wInum2, Ei_B, Ei_BT, Ei_A;
 linearSolver LLT;
 Eigen::VectorX<mfloat> tempW;
 void initial_Eigen() {
-    In.resize(Ainput.B.nRow, Ainput.B.nRow);
-    In.setIdentity();
-    wInum.resize(Ainput.B.nCol, Ainput.B.nCol);
-    wInum.setIdentity();
-    wInum2.resize(Ainput.B.nRow, Ainput.B.nRow);
-    wInum2.setIdentity();
-    Ei_B = get_eigen_spMat(Ainput.BT);
-    Ei_BT = Ei_B.transpose();
-    LLT.isEmpty = false;
-    tempW.resize(Ainput.B.nCol, 1);
-    temp_pre = new Eigen::VectorX<mfloat> [Ainput.dim_d];
-    temp2_pre = new Eigen::VectorX<mfloat> [Ainput.dim_d];
-    for (int i = 0; i < Ainput.dim_d; ++i) {
-        temp_pre[i].resize(Ainput.B.nRow, 1);
-        temp2_pre[i].resize(Ainput.B.nRow, 1);
-    }
+//    In.resize(Ainput.B.nRow, Ainput.B.nRow);
+//    In.setIdentity();
+//    wInum.resize(Ainput.B.nCol, Ainput.B.nCol);
+//    wInum.setIdentity();
+//    wInum2.resize(Ainput.B.nRow, Ainput.B.nRow);
+//    wInum2.setIdentity();
+//    Ei_B = get_eigen_spMat(Ainput.BT);
+//    Ei_BT = Ei_B.transpose();
+//    LLT.isEmpty = false;
+//    tempW.resize(Ainput.B.nCol, 1);
+//    temp_pre = new Eigen::VectorX<mfloat> [Ainput.dim_d];
+//    temp2_pre = new Eigen::VectorX<mfloat> [Ainput.dim_d];
+//    for (int i = 0; i < Ainput.dim_d; ++i) {
+//        temp_pre[i].resize(Ainput.B.nRow, 1);
+//        temp2_pre[i].resize(Ainput.B.nRow, 1);
+//    }
 }
 
 void create_ADMM() {
@@ -754,71 +754,71 @@ void update_sigma_admm(){
 }
 
 
-void writeCOO() {
-    using namespace std;
-#ifdef NUM_THREADS_OpenMP
-    omp_set_num_threads(NUM_THREADS_OpenMP);
-    printf("PARALLEL Switch On: %d threads\n", NUM_THREADS_OpenMP);
-#endif
-    int d = 10, n = 30000, k_n = 10;
-    mfloat phi = 0.5;
-    auto* data = new mfloat [d*n];
-    read_bin("../mnist_1000000_10.bin", data, d*n);
-
-    auto* weightVec = new mfloat [k_n*n];
-    auto *NodeArcMatrix = new int [k_n*n*2];
-
-    int num = compute_weight(data, k_n, d, n, phi, 1, NodeArcMatrix);
-
-    spR BT;
-    get_spR(NodeArcMatrix, &BT, num);
-    BT.nRow = num;
-    BT.nCol = n;
-    spR B;
-    B = get_BT(num, n, BT);
-
-    auto* rIdx = new int [2*num];
-    for (int i = 0; i < B.nRow; ++i) {
-        for (int j = B.rowStart[i]; j < B.rowStart[i+1]; ++j) {
-//            if (i == 0)
-//                std::cout << j << std::endl;
-            rIdx[j] = i;
-        }
-
-    }
-
-    for (int i = 0; i < 20; ++i)
-        std::cout << B.column[i] << std::endl;
-    ofstream out("../data/mnist_1000000_rIdx.bin", ios::out | ios::binary);
-    if(!out) {
-        cout << "Cannot open file.";
-        return;
-    }
-    out.write((char *) rIdx, sizeof(int)*2*num);
-
-    std::cout << num << std::endl;
-
-    out.close();
-
-    ofstream out2("../data/mnist_1000000_cIdx.bin", ios::out | ios::binary);
-    if(!out2) {
-        cout << "Cannot open file.";
-        return;
-    }
-
-    out2.write((char *) B.column, sizeof(int)*num*2);
-
-    out2.close();
-
-    ofstream out3("../data/mnist_1000000_value.bin", ios::out | ios::binary);
-    if(!out3) {
-        cout << "Cannot open file.";
-        return;
-    }
-
-    out3.write((char *) B.value, sizeof(mfloat)*num*2);
-
-    out3.close();
-
-
-}
+//void writeCOO() {
+//    using namespace std;
+//#ifdef NUM_THREADS_OpenMP
+//    omp_set_num_threads(NUM_THREADS_OpenMP);
+//    printf("PARALLEL Switch On: %d threads\n", NUM_THREADS_OpenMP);
+//#endif
+//    int d = 10, n = 30000, k_n = 10;
+//    mfloat phi = 0.5;
+//    auto* data = new mfloat [d*n];
+//    read_bin("../mnist_1000000_10.bin", data, d*n);
+//
+//    auto* weightVec = new mfloat [k_n*n];
+//    auto *NodeArcMatrix = new int [k_n*n*2];
+//
+////    int num = compute_weight(data, k_n, d, n, phi, 1, NodeArcMatrix);
+//
+//    spR BT;
+//    get_spR(NodeArcMatrix, &BT, num);
+//    BT.nRow = num;
+//    BT.nCol = n;
+//    spR B;
+//    B = get_BT(num, n, BT);
+//
+//    auto* rIdx = new int [2*num];
+//    for (int i = 0; i < B.nRow; ++i) {
+//        for (int j = B.rowStart[i]; j < B.rowStart[i+1]; ++j) {
+////            if (i == 0)
+////                std::cout << j << std::endl;
+//            rIdx[j] = i;
+//        }
+//
+//    }
+//
+//    for (int i = 0; i < 20; ++i)
+//        std::cout << B.column[i] << std::endl;
+//    ofstream out("../data/mnist_1000000_rIdx.bin", ios::out | ios::binary);
+//    if(!out) {
+//        cout << "Cannot open file.";
+//        return;
+//    }
+//    out.write((char *) rIdx, sizeof(int)*2*num);
+//
+//    std::cout << num << std::endl;
+//
+//    out.close();
+//
+//    ofstream out2("../data/mnist_1000000_cIdx.bin", ios::out | ios::binary);
+//    if(!out2) {
+//        cout << "Cannot open file.";
+//        return;
+//    }
+//
+//    out2.write((char *) B.column, sizeof(int)*num*2);
+//
+//    out2.close();
+//
+//    ofstream out3("../data/mnist_1000000_value.bin", ios::out | ios::binary);
+//    if(!out3) {
+//        cout << "Cannot open file.";
+//        return;
+//    }
+//
+//    out3.write((char *) B.value, sizeof(mfloat)*num*2);
+//
+//    out3.close();
+//
+//
+//}

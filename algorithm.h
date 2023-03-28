@@ -41,8 +41,9 @@ typedef struct {
 
 typedef struct {
     double *x,*r,*z,*p,*Ap;
-    int dim_n, dim_d, max_iter;
-    double tol;
+    int dim_n, dim_d, max_iter, nCGs;
+    double tol, cgTime;
+    linearSolver LLT;
 } CG_struct;
 
 typedef struct {
@@ -206,7 +207,7 @@ void print_spM(spR input);
 Eigen::SparseMatrix<mfloat> get_eigen_spMat(spR BT);
 
 /// compute the L^{-1} * r;
-void precond_CG(const mfloat *input, mfloat *output, int m, int n);
+void precond_CG(CG_struct* CG_space);
 
 /// initialize Eigen variable for cholesky.
 void initial_Eigen();
