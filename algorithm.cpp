@@ -7,6 +7,8 @@
 
 //#define USE_CBLAS 1
 
+using namespace std;
+
 void read_bin(const char *lpFileName, mfloat* X, int len) {
     std::ifstream in(lpFileName, std::ios::in | std::ios::binary);
     if (!in.good()) {
@@ -92,6 +94,18 @@ void proj_l2(const mfloat* input, mfloat weight, mfloat* output, int len, mfloat
     }
 }
 
+void proj(const mfloat* input, mfloat* output, int len, const mfloat* l, const mfloat* u) {
+#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(len, input, output, l ,u)
+    for (int i = 0; i < len; ++i) {
+        if (input[i] < l[i])
+            output[i] = l[i];
+        else if (input[i] > u[i])
+            output[i] = u[i];
+        else
+            output[i] = input[i];
+    }
+}
+
 mfloat norm2(const mfloat* x, int len) {
     mfloat sum2 = 0.0;
 #pragma omp parallel for num_threads(NUM_THREADS_OpenMP) shared(len, x) reduction(+:sum2) default(none)
@@ -136,6 +150,12 @@ void axpy(const mfloat a, const mfloat* x, const mfloat* y, mfloat* z, const int
 #pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(len, y, z, a, x)
         for (int i = 0; i < len; ++i)
             z[i] = y[i] + a*x[i];
+}
+
+void ax(mfloat a, const mfloat* x, mfloat* z, int len) {
+#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(len, z, a, x)
+    for (int i = 0; i < len; ++i)
+        z[i] = a*x[i];
 }
 
 void axpyT(const mfloat a, const mfloat* x, const mfloat* y, mfloat* z, const int m, const int n){
@@ -261,7 +281,7 @@ void knnsearch(const mfloat*x, int k, int m, int n, int* k_nearest, mfloat* dist
 //    }
 //}
 
-void get_spR(const int* NodeArcMatrix, spR* BT, int num) {
+void get_spR(const int* NodeArcMatrix, sparseRowMatrix * BT, int num) {
     BT->value = new mfloat [2*num];
     BT->rowStart = new int [num+1];
     BT->column = new int [2*num];
@@ -280,12 +300,13 @@ void get_spR(const int* NodeArcMatrix, spR* BT, int num) {
 }
 
 
-spR get_BT(int num, int n, spR BT) {
-    spR Bf;
-    int* rowIndex = new int [2*num];
-    int nnz = 2*num;
+sparseRowMatrix get_BT(sparseRowMatrix BT) {
+    // somewhere wrong
+    sparseRowMatrix Bf;
+//    int* rowIndex = new int [2*num];
+    int nnz = BT.rowStart[BT.nRow];
     Bf.value = new mfloat [nnz];
-    Bf.rowStart = new int [n+2];
+    Bf.rowStart = new int [BT.nCol];
 //    BT->rowLength = new int [m];
     Bf.column = new int [nnz];
     mfloat* newValue = Bf.value;
@@ -295,7 +316,7 @@ spR get_BT(int num, int n, spR BT) {
     mfloat* oldValue = BT.value;
     int *colStart = BT.rowStart;
     int *row = BT.column;
-    for (int i = 0; i < n+2; ++i) {
+    for (int i = 0; i < BT.nCol+2; ++i) {
         rowStart[i] = 0;
     }
     // count per row
@@ -304,12 +325,12 @@ spR get_BT(int num, int n, spR BT) {
     }
 
     // generate rowStart
-    for (int i = 2; i < n+2; ++i) {
+    for (int i = 2; i < BT.nCol+2; ++i) {
         rowStart[i] += rowStart[i-1];
     }
 
     // main part
-    for (int i = 0; i < num; ++i) {
+    for (int i = 0; i < BT.nRow; ++i) {
         for (int j = colStart[i]; j < colStart[i+1]; ++j) {
             int newIndex = rowStart[row[j] + 1]++;
             newValue[newIndex] = oldValue[j];
@@ -325,7 +346,7 @@ spR get_BT(int num, int n, spR BT) {
 //        rowStart[i] = rowStart[i+1];
 }
 
-void spMV_R(spR A, const mfloat* x, int m, int n, mfloat* Ax) {
+void spMV_R(sparseRowMatrix A, const mfloat* x, int m, int n, mfloat* Ax) {
     mfloat* value = A.value;
     int* rowStart = A.rowStart;
     int* column = A.column;
@@ -340,7 +361,7 @@ void spMV_R(spR A, const mfloat* x, int m, int n, mfloat* Ax) {
     }
 }
 
-void partial_spMV_2(spR A, const mfloat* x, int m, int n, mfloat* Ax, spVec_int nzidx) {
+void partial_spMV_2(sparseRowMatrix A, const mfloat* x, int m, int n, mfloat* Ax, spVec_int nzidx) {
     mfloat* value = A.value;
     int* rowStart = A.rowStart;
     int* column = A.column;
@@ -458,6 +479,326 @@ void My_CG() {
 void create_PCG() {
 }
 
+void simple_QP_test() {
+    QP_struct *QP_space = new QP_struct;
+    sparseRowMatrix Q;
+    Q.value = new mfloat [4];
+    Q.nRow = 2; Q.nCol = 2;
+    Q.value[0] = 4; Q.value[1] = 2; Q.value[2] = 2; Q.value[3] = 6;
+    Q.rowStart = new int [3];
+    Q.rowStart[0] = 0; Q.rowStart[1] = 2; Q.rowStart[2] = 4;
+    Q.column = new int [4];
+    Q.column[0] = 0; Q.column[1] = 1; Q.column[2] = 0; Q.column[3] = 1;
+
+    QP_space->Q = Q;
+    QP_space->c = new mfloat [2];
+    QP_space->c[0] = 0; QP_space->c[1] = 0;
+
+    sparseRowMatrix A;
+    A.value = new mfloat [4];
+    A.nRow = 2; A.nCol = 2;
+    A.value[0] = 1; A.value[1] = 1; A.value[2] = 2; A.value[3] = -1;
+    A.rowStart = new int [3];
+    A.rowStart[0] = 0; A.rowStart[1] = 2; A.rowStart[2] = 4;
+    A.column = new int [4];
+    A.column[0] = 0; A.column[1] = 1; A.column[2] = 0; A.column[3] = 1;
+    QP_space->A = A;
+
+    QP_space->b = new mfloat [2];
+    QP_space->b[0] = 1; QP_space->b[1] = 0;
+
+    QP_space->l = new mfloat [2];
+    QP_space->l[0] = -1e300; QP_space->l[1] = -1e300;
+
+    QP_space->u = new mfloat [2];
+    QP_space->u[0] = 1e300; QP_space->u[1] = 1e300;
+
+    QP_space->m = 2; QP_space->n = 2;
+
+    sGSADMM_QP(QP_space);
+}
+
+
+void sGSADMM_QP(QP_struct *QP_space) {
+    sGSADMM_QP_init(QP_space);
+
+    while (QP_space->iter < QP_space->maxADMMiter) {
+        sGSADMM_QP_update_y_first(QP_space);
+        sGSADMM_QP_update_w_first(QP_space);
+        sGSADMM_QP_update_z(QP_space);
+        sGSADMM_QP_update_w_second(QP_space);
+        sGSADMM_QP_update_y_second(QP_space);
+        sGSADMM_QP_update_x(QP_space);
+
+        sGSADMM_QP_compute_status(QP_space);
+        update_sigma(QP_space);
+        sGSADMM_QP_print_status(QP_space);
+        QP_space->iter++;
+    }
+
+}
+
+void sGSADMM_QP_init(QP_struct *QP_space) {
+    int n = QP_space->n, m = QP_space->m;
+    QP_space->w = new mfloat [n];
+    QP_space->w_bar = new mfloat [n];
+    QP_space->y = new mfloat [m];
+    QP_space->y_bar = new mfloat [m];
+    QP_space->z = new mfloat [n];
+    QP_space->z_new = new mfloat [n];
+    QP_space->x = new mfloat [n];
+    for (int i = 0; i < n; ++i) {
+        QP_space->w[i] = 0; QP_space->z[i] = 0; QP_space->x[i] = 0;
+    }
+    for (int i = 0; i < m; ++i) {
+        QP_space->y[i] = 0;
+    }
+    QP_space->gamma = 1.618;
+    QP_space->sigma = 1.0;
+    QP_space->update_y_rhs = new mfloat [m];
+    QP_space->Qw = new mfloat [n];
+    QP_space->Qx = new mfloat [n];
+    QP_space->RQ = new mfloat [n];
+    QP_space->RC = new mfloat [n];
+    spMV_R(QP_space->Q, QP_space->w, n, n, QP_space->Qw);
+    QP_space->ATy = new mfloat [n];
+    QP_space->Ax = new mfloat [m];
+    QP_space->Rd = new mfloat [n];
+    QP_space->Rp = new mfloat [m];
+    QP_space->z_Qw_c = new mfloat [n];
+    QP_space->A_times_z_Qw_c = new mfloat [m];
+    QP_space->dz = new mfloat [n];
+    QP_space->Qdz = new mfloat [n];
+    QP_space->update_w_rhs = new mfloat [n];
+    QP_space->z_ATy_c = new mfloat [n];
+    QP_space->update_z_unProjected = new mfloat [n];
+    QP_space->update_z_projected = new mfloat [n];
+    QP_space->iter = 0;
+    QP_space->maxADMMiter = 200;
+    QP_space->AT = get_BT(QP_space->A);
+
+    Eigen::SparseMatrix<mfloat> EigenA = get_eigen_spMat(QP_space->A);
+    Eigen::SparseMatrix<mfloat> EigenAT = get_eigen_spMat(QP_space->AT);
+    Eigen::SparseMatrix<mfloat> EigenAAT = EigenA.transpose()*EigenA;
+
+    cout << EigenA << endl;
+    QP_space->EigenQ = get_eigen_spMat(QP_space->Q);
+    QP_space->EigenI.resize(n, n);
+    QP_space->EigenI.setIdentity();
+//    EigenQ = 1/QP_space->sigma*EigenQ + EigenQ*EigenQ;
+
+
+//    cout << EigenA << endl;
+
+//    cout << EigenAAT << endl;
+
+    // Eigen is using column major
+    Eigen::SparseMatrix<double> upperMatAAT = EigenAAT.triangularView<Eigen::Lower>();
+//    upperMat = upperMat.transpose();
+
+    QP_space->AAT.nRow = m; QP_space->AAT.nCol = m;
+    int nnz = upperMatAAT.nonZeros();
+    QP_space->AAT.rowStart = new int [m+1];
+    QP_space->AAT.column = new int [nnz];
+    QP_space->AAT.value = new mfloat [nnz];
+    vMemcpy(upperMatAAT.outerIndexPtr(), m+1, QP_space->AAT.rowStart);
+//    QP_space->AAT.rowStart[1] = 2;
+//    cout << QP_space->AAT.rowStart[0] << QP_space->AAT.rowStart[1] << QP_space->AAT.rowStart[2] << endl;
+    vMemcpy(upperMatAAT.innerIndexPtr(), upperMatAAT.nonZeros(), QP_space->AAT.column);
+//    cout << QP_space->AAT.column[0] << QP_space->AAT.column[1] << QP_space->AAT.column[2] << endl;
+//    QP_space->AAT.column[1] = 1;
+    vMemcpy(upperMatAAT.valuePtr(), upperMatAAT.nonZeros(), QP_space->AAT.value);
+//    cout << QP_space->AAT.value[0] << QP_space->AAT.value[1] << QP_space->AAT.value[2] << endl;
+
+    cout << upperMatAAT << endl;
+    QP_space->PDS_A = new PARDISO_var;
+    PARDISO_init(QP_space->PDS_A, QP_space->AAT);
+    PARDISO_numerical_fact(QP_space->PDS_A);
+
+
+    QP_space->EigenIQ = 1/QP_space->sigma*QP_space->EigenI + QP_space->EigenQ;
+    QP_space->upperMatQ = QP_space->EigenIQ.triangularView<Eigen::Lower>();
+    cout << QP_space->upperMatQ << endl;
+    QP_space->IQ.nRow = n; QP_space->IQ.nCol = n;
+    QP_space->IQ.rowStart = QP_space->upperMatQ.outerIndexPtr();
+    QP_space->IQ.column = QP_space->upperMatQ.innerIndexPtr();
+    QP_space->IQ.value = QP_space->upperMatQ.valuePtr();
+    QP_space->PDS_IQ = new PARDISO_var;
+    PARDISO_init(QP_space->PDS_IQ, QP_space->IQ);
+    PARDISO_numerical_fact(QP_space->PDS_IQ);
+}
+
+void sGSADMM_QP_update_y_first(QP_struct *QP_space) {
+    mfloat *rhs = QP_space->update_y_rhs;
+    mfloat *z_Qw_c = QP_space->z_Qw_c;
+    int m = QP_space->m, n = QP_space->n;
+
+    spMV_R(QP_space->A, QP_space->x, m, n, QP_space->Ax);
+    axpy(-1, QP_space->Ax, QP_space->b, rhs, m);
+    ax(1/QP_space->sigma, rhs, rhs, m);
+
+    axpy(-1, QP_space->Qw, QP_space->z, z_Qw_c, n);
+    axpy(-1, QP_space->c, z_Qw_c, z_Qw_c, n);
+    spMV_R(QP_space->A, z_Qw_c, m, n, QP_space->A_times_z_Qw_c);
+
+    axpy(-1, QP_space->A_times_z_Qw_c, rhs, rhs, m);
+
+    PARDISO_solve(QP_space->PDS_A, rhs);
+    vMemcpy(QP_space->PDS_A->x, n, QP_space->y_bar);
+}
+
+void sGSADMM_QP_update_y_second(QP_struct *QP_space) {
+    mfloat *rhs = QP_space->update_y_rhs;
+    mfloat *z_Qw_c = QP_space->z_Qw_c;
+    int m = QP_space->m, n = QP_space->n;
+
+    axpy(-1, QP_space->Ax, QP_space->b, rhs, m);
+    ax(1/QP_space->sigma, rhs, rhs, m);
+
+    spMV_R(QP_space->Q, QP_space->w, n, n, QP_space->Qw);
+    axpy(-1, QP_space->Qw, QP_space->z, z_Qw_c, n);
+    axpy(-1, QP_space->c, z_Qw_c, z_Qw_c, n);
+    spMV_R(QP_space->A, z_Qw_c, m, n, QP_space->A_times_z_Qw_c);
+
+    axpy(-1, QP_space->A_times_z_Qw_c, rhs, rhs, m);
+
+    PARDISO_solve(QP_space->PDS_A, rhs);
+    vMemcpy(QP_space->PDS_A->x, n, QP_space->y);
+}
+
+void sGSADMM_QP_update_w_first(QP_struct *QP_space) {
+    mfloat *rhs = QP_space->update_w_rhs;
+    mfloat *z_ATy_c = QP_space->z_ATy_c;
+    int m = QP_space->m, n = QP_space->n;
+//    mfloat *rhs2 = new mfloat [n];
+
+    spMV_R(QP_space->AT, QP_space->y_bar, n, m, QP_space->ATy);
+    axpy(-1, QP_space->ATy, QP_space->z, z_ATy_c, n);
+    axpy(-1, QP_space->c, z_ATy_c, z_ATy_c, n);
+
+    axpy(1/QP_space->sigma, QP_space->x, QP_space->z_ATy_c, rhs, n);
+
+//    spMV_R(QP_space->Q, rhs, n, n, rhs2);
+    PARDISO_solve(QP_space->PDS_IQ, rhs);
+    vMemcpy(QP_space->PDS_IQ->x, n, QP_space->w_bar);
+}
+
+void sGSADMM_QP_update_w_second(QP_struct *QP_space) {
+    mfloat *rhs = QP_space->update_w_rhs;
+    mfloat *z_ATy_c = QP_space->z_ATy_c;
+    int m = QP_space->m, n = QP_space->n;
+
+//    spMV_R(QP_space->Q, QP_space->dz, n, n, QP_space->Qdz);
+    axpy(1, QP_space->dz, rhs, rhs, n);
+
+    PARDISO_solve(QP_space->PDS_IQ, rhs);
+    vMemcpy(QP_space->PDS_IQ->x, n, QP_space->w);
+}
+
+void sGSADMM_QP_update_z(QP_struct *QP_space) {
+    mfloat *unProjected = QP_space->update_z_unProjected;
+    mfloat *projected = QP_space->update_z_projected;
+    int n = QP_space->n;
+
+    spMV_R(QP_space->Q, QP_space->w_bar, n, n, QP_space->Qw);
+    axpy(-1, QP_space->Qw, QP_space->ATy, unProjected, n);
+    axpy(-1, QP_space->c, unProjected, unProjected, n);
+    axpy(QP_space->sigma, unProjected, QP_space->x, unProjected, n);
+
+    proj(unProjected, projected, n, QP_space->l, QP_space->u);
+    axpy(-1, unProjected, projected, QP_space->z_new, n);
+    ax(1/QP_space->sigma, QP_space->z_new, QP_space->z_new, n);
+
+    axpy(-1, QP_space->z, QP_space->z_new, QP_space->dz, n);
+    vMemcpy(QP_space->z_new, n, QP_space->z);
+}
+
+void sGSADMM_QP_update_x(QP_struct *QP_space) {
+    mfloat gamma = QP_space->gamma;
+    mfloat sigma = QP_space->sigma;
+    int n = QP_space->n;
+    int m = QP_space->m;
+    spMV_R(QP_space->AT, QP_space->y, n, m, QP_space->ATy);
+    axpy(gamma*sigma, QP_space->z_Qw_c, QP_space->x, QP_space->x, n);
+    axpy(gamma*sigma, QP_space->ATy, QP_space->x, QP_space->x, n);
+}
+
+void sGSADMM_QP_compute_status(QP_struct *QP_space) {
+    int m = QP_space->m, n = QP_space->n;
+    axpy(-1, QP_space->Ax, QP_space->b, QP_space->Rp, m);
+    QP_space->inf_p = norm2(QP_space->Rp, m)/(1 + norm2(QP_space->b, m));
+
+    axpy(-1, QP_space->Qw, QP_space->z, QP_space->Rd, n);
+    axpy(-1, QP_space->c, QP_space->Rd, QP_space->Rd, n);
+    spMV_R(QP_space->AT, QP_space->y, n, m, QP_space->ATy);
+    axpy(1, QP_space->ATy, QP_space->Rd, QP_space->Rd, n);
+    QP_space->inf_d = norm2(QP_space->Rd, n)/(1 + norm2(QP_space->c, n));
+
+    spMV_R(QP_space->Q, QP_space->x, n, n, QP_space->Qx);
+    axpy(-1, QP_space->Qw, QP_space->Qx, QP_space->RQ, n);
+    QP_space->inf_Q = norm2(QP_space->RQ, n)/(1 + norm2(QP_space->Qx, n) + norm2(QP_space->Qw, n));
+
+    axpy(-1, QP_space->z, QP_space->x, QP_space->dz, n);
+    proj(QP_space->dz, QP_space->update_z_projected, n, QP_space->l, QP_space->u);
+    axpy(-1, QP_space->update_z_projected, QP_space->x, QP_space->RC, n);
+    QP_space->inf_C = norm2(QP_space->RC, n)/(1 + norm2(QP_space->x, n) + norm2(QP_space->z, n));
+
+    QP_space->primal_obj = xTy(QP_space->x, QP_space->Qx, n)/2 + xTy(QP_space->c, QP_space->x, n);
+    QP_space->dual_obj = -support_function(QP_space->z, QP_space->l, QP_space->u, n, &QP_space->infty_z);
+    QP_space->dual_obj += -xTy(QP_space->w, QP_space->Qw, n)/2 + xTy(QP_space->b, QP_space->y, m);
+    QP_space->inf_g = (QP_space->primal_obj - QP_space->dual_obj)/(1+abs(QP_space->primal_obj)+abs(QP_space->dual_obj));
+}
+
+void sGSADMM_QP_refact_IQ(QP_struct* QP_space) {
+//    QP_space->EigenIQ = 1/QP_space->sigma*QP_space->EigenI + QP_space->EigenQ;
+//    QP_space->upperMatQ = QP_space->EigenIQ.triangularView<Eigen::Lower>();
+//    cout << upperMatQ << endl;
+//    QP_space->IQ.nRow = QP_space->n; QP_space->IQ.nCol = QP_space->n;
+//    QP_space->IQ.rowStart = QP_space->upperMatQ.outerIndexPtr();
+//    QP_space->IQ.column = QP_space->upperMatQ.innerIndexPtr();
+//    QP_space->IQ.value = QP_space->upperMatQ.valuePtr();
+
+//    PARDISO_init(QP_space->PDS_IQ, QP_space->IQ);
+//    vMemcpy(QP_space->IQ.value, QP_space->EigenQ.nonZeros(), QP_space->PDS_IQ->a);
+
+//    cout << QP_space->PDS_IQ->a[0] << ' ' << QP_space->PDS_IQ->a[1] << ' ' << QP_space->PDS_IQ->a[2] << endl;
+//    cout << QP_space->upperMatQ << endl;
+//    QP_space->PDS_IQ->a = QP_space->IQ.value;
+//    QP_space->PDS_IQ->ia = QP_space->IQ.rowStart;
+//    QP_space->PDS_IQ->ja = QP_space->IQ.column;
+    mfloat inv_sigma_old = 1/QP_space->sigma_old;
+    mfloat inv_sigma = 1/QP_space->sigma;
+    for (int i = 0; i < QP_space->n; ++i) {
+        QP_space->PDS_IQ->a[QP_space->PDS_IQ->ia[i]-1] += -inv_sigma_old + inv_sigma;
+    }
+    PARDISO_numerical_fact(QP_space->PDS_IQ);
+}
+
+void sGSADMM_QP_print_status(QP_struct* QP_space) {
+    if (QP_space->iter == 0) {
+        printf("iter    inf_p      inf_d       inf_Q       inf_C       obj_p        obj_d       inf_g       sigma\n");
+    }
+    if (QP_space->iter % 20 == 0) {
+        printf("%4d    %3.2e   %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2e\n", QP_space->iter, QP_space->inf_p, QP_space->inf_d, QP_space->inf_Q, QP_space->inf_C, QP_space->primal_obj, QP_space->dual_obj, QP_space->inf_g, QP_space->sigma);
+    }
+}
+
+mfloat support_function(const mfloat* x, const mfloat* l, const mfloat* u, int len, mfloat* infty_x) {
+    mfloat res = 0;
+    *infty_x = 0;
+    for (int i = 0; i < len; ++i) {
+        if (x[i] < 0) {
+            // -x > 0
+            if (u[i] > 1e30) *infty_x += x[i]*x[i];
+            else res += -x[i] * u[i];
+        } else {
+            if (l[i] < -1e30) *infty_x += x[i]*x[i];
+            else res += -x[i] * l[i];
+        }
+    }
+}
+
+
 void PCG(const mfloat* x0, const mfloat* rhs, CG_struct* CG_space, mfloat* output) {
     int n = CG_space->dim_n, d = CG_space->dim_d;
     mfloat tol = CG_space->tol;
@@ -521,6 +862,8 @@ void PCG(const mfloat* x0, const mfloat* rhs, CG_struct* CG_space, mfloat* outpu
 //    return x_pcg;
 }
 
+
+
 Mat creat_Mat(int m, int n) {
     Mat output;
     output.nRow = m;
@@ -538,7 +881,7 @@ void print_Mat(const mfloat* X, int m, int n) {
     }
 }
 
-void partial_spMV_R(spR A, const mfloat* x, int m, int n, mfloat* Ax, spVec_int nzidx) {
+void partial_spMV_R(sparseRowMatrix A, const mfloat* x, int m, int n, mfloat* Ax, spVec_int nzidx) {
     mfloat* value = A.value;
     int* rowStart = A.rowStart;
     int* column = A.column;
@@ -557,8 +900,8 @@ void partial_spMV_R(spR A, const mfloat* x, int m, int n, mfloat* Ax, spVec_int 
     }
 }
 
-spR B_sub_Row(spVec_int nzidx, spR BT) {
-    spR Bf;
+sparseRowMatrix B_sub_Row(spVec_int nzidx, sparseRowMatrix BT) {
+    sparseRowMatrix Bf;
     int num = nzidx.number;
     if (num > 0) {
         int n = BT.nCol;
@@ -641,25 +984,18 @@ void create_find_step() {
 void find_step(int stepopt) {
 }
 
-mfloat obj_val_SSN() {
-}
-
-mfloat primal_obj() {
-}
-
-mfloat dual_obj() {
-}
 
 bool check_termination_SSN(int iter) {
 }
 
 
-void update_sigma(mfloat primfeas, mfloat dualfeas, int iter) {
+void update_sigma(QP_struct *QP_space) {
 //    if (primfeas < dualfeas)
 //        primWin++;
 //    else
 //        dualWin++;
 
+    int iter = QP_space->iter;
     int sigma_update_iter = 2;
     if (iter < 10)
         sigma_update_iter = 2;
@@ -670,19 +1006,27 @@ void update_sigma(mfloat primfeas, mfloat dualfeas, int iter) {
     else if (iter < 500)
         sigma_update_iter = 10;
 
-    mfloat factor = 5.0;
+//    mfloat factor = 5.0;
+    mfloat inf_primal = max(QP_space->inf_p, max(QP_space->inf_Q, QP_space->inf_C));
+    QP_space->sigma_old = QP_space->sigma;
     if (iter % sigma_update_iter == 0) {
-//        if (primWin > std::max(1.0, 1.2*dualWin)) {
-//            primWin = 0;
-//            par.sigma = std::max(1e-4, par.sigma/factor);
-//        } else if (dualWin > std::max(1.0, 1.2*primWin)) {
-//            dualWin = 0;
-//            par.sigma = std::min(1e5, par.sigma*factor);
-//        }
+        if (inf_primal < 0.75*QP_space->inf_d) {
+            QP_space->sigma *= 1.25;
+        }
+        else if (inf_primal > 1.33*QP_space->inf_d) {
+            QP_space->sigma *= 0.8;
+        }
+
+        QP_space->sigma = min(QP_space->sigma, 1e5);
+        QP_space->sigma = max(QP_space->sigma, 1e-10);
     }
+    if (abs(QP_space->sigma_old - QP_space->sigma) > 1e-11) {
+        sGSADMM_QP_refact_IQ(QP_space);
+    }
+
 }
 
-void print_spM(spR input) {
+void print_spM(sparseRowMatrix input) {
     for (int i = 0; i < input.nRow; ++i) {
         for (int j = input.rowStart[i]; j < input.rowStart[i+1]; ++j) {
             std::cout << i << ' ' << input.column[j] << ' ' << input.value[j] << std::endl;
@@ -690,7 +1034,7 @@ void print_spM(spR input) {
     }
 }
 
-Eigen::SparseMatrix<mfloat> get_eigen_spMat(spR BT) {
+Eigen::SparseMatrix<mfloat> get_eigen_spMat(sparseRowMatrix BT) {
     typedef Eigen::Triplet<mfloat> T;
     std::vector<T> tripletList;
     tripletList.reserve(BT.nRow*2);
@@ -721,10 +1065,6 @@ void precond_CG(CG_struct* CG_space) {
     }
 }
 
-Eigen::VectorX<mfloat> *temp_pre, *temp2_pre;
-Eigen::SparseMatrix<mfloat> In, wInum, wInum2, Ei_B, Ei_BT, Ei_A;
-linearSolver LLT;
-Eigen::VectorX<mfloat> tempW;
 void initial_Eigen() {
 //    In.resize(Ainput.B.nRow, Ainput.B.nRow);
 //    In.setIdentity();
@@ -753,72 +1093,200 @@ void ADMM() {
 void update_sigma_admm(){
 }
 
+int PARDISO_init(PARDISO_var *PDS, sparseRowMatrix A) {
+    PDS->n = A.nRow;
+    if (A.nRow != A.nCol) {
+        cout << "not square matrix" << endl;
+        return 0;
+    }
+    PDS->debug = false;
+    PDS->ia = A.rowStart;
+    PDS->ja = A.column;
+    int nnz = A.rowStart[A.nRow];
+    PDS->a = A.value;
+    PDS->mtype = -2;        /* Real symmetric matrix */
 
-//void writeCOO() {
-//    using namespace std;
-//#ifdef NUM_THREADS_OpenMP
-//    omp_set_num_threads(NUM_THREADS_OpenMP);
-//    printf("PARALLEL Switch On: %d threads\n", NUM_THREADS_OpenMP);
-//#endif
-//    int d = 10, n = 30000, k_n = 10;
-//    mfloat phi = 0.5;
-//    auto* data = new mfloat [d*n];
-//    read_bin("../mnist_1000000_10.bin", data, d*n);
-//
-//    auto* weightVec = new mfloat [k_n*n];
-//    auto *NodeArcMatrix = new int [k_n*n*2];
-//
-////    int num = compute_weight(data, k_n, d, n, phi, 1, NodeArcMatrix);
-//
-//    spR BT;
-//    get_spR(NodeArcMatrix, &BT, num);
-//    BT.nRow = num;
-//    BT.nCol = n;
-//    spR B;
-//    B = get_BT(num, n, BT);
-//
-//    auto* rIdx = new int [2*num];
-//    for (int i = 0; i < B.nRow; ++i) {
-//        for (int j = B.rowStart[i]; j < B.rowStart[i+1]; ++j) {
-////            if (i == 0)
-////                std::cout << j << std::endl;
-//            rIdx[j] = i;
-//        }
-//
+    /* RHS and solution vectors. */
+    PDS->x = (mfloat *) malloc(sizeof(mfloat) * PDS->n);
+
+    PDS->nrhs = 1;          /* Number of right hand sides. */
+
+/* -------------------------------------------------------------------- */
+/* ..  Setup Pardiso control parameters.                                */
+/* -------------------------------------------------------------------- */
+
+    PDS->error = 0;
+    PDS->solver = 0; /* use sparse direct solver */
+    pardisoinit (PDS->pt,  &(PDS->mtype), &(PDS->solver), PDS->iparm, PDS->dparm, &(PDS->error));
+
+    if (PDS->error != 0)
+    {
+        if (PDS->error == -10 )
+            printf("No license file found \n");
+        if (PDS->error == -11 )
+            printf("License is expired \n");
+        if (PDS->error == -12 )
+            printf("Wrong username or hostname \n");
+        return 1;
+    }
+    else
+        printf("[PARDISO]: License check was successful ... \n");
+
+    /* Numbers of processors, value of OMP_NUM_THREADS */
+//    char *var = getenv("OMP_NUM_THREADS");
+//    if(var != NULL)
+//        sscanf( var, "%d", &num_procs );
+//    else {
+//        printf("Set environment OMP_NUM_THREADS to 1");
+//        num_procs = 1;
+////        exit(1);
 //    }
-//
-//    for (int i = 0; i < 20; ++i)
-//        std::cout << B.column[i] << std::endl;
-//    ofstream out("../data/mnist_1000000_rIdx.bin", ios::out | ios::binary);
-//    if(!out) {
-//        cout << "Cannot open file.";
-//        return;
+    PDS->iparm[2]  = 1;
+
+    PDS->maxfct = 1;		/* Maximum number of numerical factorizations.  */
+    PDS->mnum   = 1;         /* Which factorization to use. */
+
+    PDS->msglvl = 0;         /* Print statistical information  */
+    PDS->error  = 0;         /* Initialize error flag */
+
+/* -------------------------------------------------------------------- */
+/* ..  Convert matrix from 0-based C-notation to Fortran 1-based        */
+/*     notation.                                                        */
+/* -------------------------------------------------------------------- */
+    for (int i = 0; i < A.nRow + 1; ++i)
+        (PDS->ia[i])++;
+    for (int i = 0; i < nnz; ++i)
+        (PDS->ja[i])++;
+
+/* -------------------------------------------------------------------- */
+/*  .. pardiso_chk_matrix(...)                                          */
+/*     Checks the consistency of the given matrix.                      */
+/*     Use this functionality only for debugging purposes               */
+/* -------------------------------------------------------------------- */
+
+    if (PDS->debug) {
+        pardiso_chkmatrix  (&(PDS->mtype), &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->error));
+        if (PDS->error != 0) {
+            printf("\nERROR in consistency of matrix: %d", PDS->error);
+            exit(1);
+        }
+    }
+
+
+/* -------------------------------------------------------------------- */
+/* ..  pardiso_chkvec(...)                                              */
+/*     Checks the given vectors for infinite and NaN values             */
+/*     Input parameters (see PARDISO user manual for a description):    */
+/*     Use this functionality only for debugging purposes               */
+/* -------------------------------------------------------------------- */
+
+    if (PDS->debug) {
+        pardiso_chkvec(&(PDS->n), &(PDS->nrhs), PDS->b, &(PDS->error));
+        if (PDS->error != 0) {
+            printf("\nERROR  in right hand side: %d", PDS->error);
+            exit(1);
+        }
+    }
+/* -------------------------------------------------------------------- */
+/* .. pardiso_printstats(...)                                           */
+/*    prints information on the matrix to STDOUT.                       */
+/*    Use this functionality only for debugging purposes                */
+/* -------------------------------------------------------------------- */
+
+    if (PDS->debug) {
+        pardiso_printstats(&(PDS->mtype), &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->nrhs), PDS->b, &(PDS->error));
+        if (PDS->error != 0) {
+            printf("\nERROR right hand side: %d", PDS->error);
+            exit(1);
+        }
+    }
+//    -------------------------------------------------------------------- */
+/* ..  Reordering and Symbolic Factorization.  This step also allocates */
+/*     all memory that is necessary for the factorization.              */
+/* -------------------------------------------------------------------- */
+    PDS->phase = 11;
+
+    pardiso (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
+             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs),
+             PDS->iparm, &(PDS->msglvl), &(PDS->ddum), &(PDS->ddum), &(PDS->error), PDS->dparm);
+
+    if (PDS->error != 0) {
+        printf("\nERROR during symbolic factorization: %d", PDS->error);
+        exit(1);
+    }
+    printf("\nReordering completed ... ");
+    printf("\nNumber of nonzeros in factors  = %d", PDS->iparm[17]);
+    printf("\nNumber of factorization MFLOPS = %d", PDS->iparm[18]);
+
+    return 0;
+}
+
+int PARDISO_numerical_fact(PARDISO_var *PDS) {
+    /* -------------------------------------------------------------------- */
+    /* ..  Numerical factorization.                                         */
+    /* -------------------------------------------------------------------- */
+    PDS->phase = 22;
+    PDS->iparm[32] = 0; /* compute determinant */
+
+    pardiso (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
+             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs),
+             PDS->iparm, &(PDS->msglvl), &(PDS->ddum), &(PDS->ddum), &(PDS->error), PDS->dparm);
+
+    if (PDS->error != 0) {
+        printf("\nERROR during numerical factorization: %d", PDS->error);
+        exit(2);
+    }
+    printf("\nFactorization completed ...\n ");
+
+    PDS->isInitialized = true;
+    return 0;
+}
+
+int PARDISO_solve(PARDISO_var *PDS, mfloat *rhs) {
+    /* ---------------------------------numerical_fact_----------------------------------- */
+    /* ..  Back substitution and iterative refinement.                      */
+    /* -------------------------------------------------------------------- */
+    PDS->phase = 33;
+
+    PDS->iparm[7] = 0;       /* Max numbers of iterative refinement steps. */
+
+    if (!(PDS->isInitialized)) {
+        cout << "PARDISO not initialized" << endl;
+        return 0;
+    }
+    PDS->b = new mfloat [PDS->n];
+    vMemcpy(rhs, PDS->n, PDS->b);
+
+    pardiso (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
+             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs),
+             PDS->iparm, &(PDS->msglvl), PDS->b, PDS->x, &(PDS->error), PDS->dparm);
+
+    if (PDS->error != 0) {
+        printf("\nERROR during solution: %d", PDS->error);
+        exit(3);
+    }
+
+//    printf("\nSolve completed ... ");
+//    printf("\nThe solution of the system is: ");
+//    for (int i = 0; i < 8; i++) {
+//        printf("\n x [%d] = % f", i, PDS->x[i] );
 //    }
-//    out.write((char *) rIdx, sizeof(int)*2*num);
-//
-//    std::cout << num << std::endl;
-//
-//    out.close();
-//
-//    ofstream out2("../data/mnist_1000000_cIdx.bin", ios::out | ios::binary);
-//    if(!out2) {
-//        cout << "Cannot open file.";
-//        return;
-//    }
-//
-//    out2.write((char *) B.column, sizeof(int)*num*2);
-//
-//    out2.close();
-//
-//    ofstream out3("../data/mnist_1000000_value.bin", ios::out | ios::binary);
-//    if(!out3) {
-//        cout << "Cannot open file.";
-//        return;
-//    }
-//
-//    out3.write((char *) B.value, sizeof(mfloat)*num*2);
-//
-//    out3.close();
-//
-//
-//}
+//    printf ("\n");
+
+    return 0;
+}
+
+int PARDISO_release(PARDISO_var *PDS) {
+    /* -------------------------------------------------------------------- */
+    /* ..  Termination and release of memory.                               */
+    /* -------------------------------------------------------------------- */
+    PDS->phase = -1;                 /* Release internal memory. */
+
+    pardiso (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
+             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs),
+             PDS->iparm, &(PDS->msglvl), &(PDS->ddum), &(PDS->ddum), &(PDS->error), PDS->dparm);
+
+    printf("\nRelease completed ... ");
+
+    return 0;
+}

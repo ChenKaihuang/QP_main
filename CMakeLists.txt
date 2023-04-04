@@ -21,4 +21,8 @@ find_library(BLAS_LIB libblas.so)
 target_link_libraries(QP PRIVATE ${LAPACK_LIB} ${BLAS_LIB})
 
 # Add additional libraries and flags
-target_link_libraries(QP PRIVATE gfortran pthread m gomp)
+target_link_libraries(QP PRIVATE gfortran pthread m)
+FIND_PACKAGE(OpenMP REQUIRED)
+if (OpenMP_FOUND)
+    set(CMAKE_CXX_FLAGS "${OpenMP_CXX_FLAGS}")
+endif ()
