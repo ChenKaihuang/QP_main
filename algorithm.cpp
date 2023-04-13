@@ -515,11 +515,20 @@ void simple_QP_test() {
 
     QP_space->m = 2; QP_space->n = 2;
 
-    sGSADMM_QP(QP_space);
+    sGSADMM_QP(Q, A, QP_space->b, QP_space->c, QP_space->l, QP_space->u, QP_space->m, QP_space->n);
 }
 
 
-void sGSADMM_QP(QP_struct *QP_space) {
+void sGSADMM_QP(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat* l, mfloat* u, int m, int n) {
+    QP_struct *QP_space = new QP_struct;
+    QP_space->Q = Q;
+    QP_space->A = A;
+    QP_space->b = b;
+    QP_space->c = c;
+    QP_space->l = l;
+    QP_space->u = u;
+    QP_space->m = m;
+    QP_space->n = n;
     sGSADMM_QP_init(QP_space);
 
     while (QP_space->iter < QP_space->maxADMMiter) {
@@ -577,14 +586,16 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
     QP_space->maxADMMiter = 200;
     QP_space->AT = get_BT(QP_space->A);
 
-    Eigen::SparseMatrix<mfloat> EigenA = get_eigen_spMat(QP_space->A);
-    Eigen::SparseMatrix<mfloat> EigenAT = get_eigen_spMat(QP_space->AT);
-    Eigen::SparseMatrix<mfloat> EigenAAT = EigenA.transpose()*EigenA;
-
-    cout << EigenA << endl;
-    QP_space->EigenQ = get_eigen_spMat(QP_space->Q);
-    QP_space->EigenI.resize(n, n);
-    QP_space->EigenI.setIdentity();
+    Eigen_init(QP_space);
+//    Eigen::SparseMatrix<mfloat> EigenA = get_eigen_spMat(QP_space->A);
+//    Eigen::SparseMatrix<mfloat> EigenAT = get_eigen_spMat(QP_space->AT);
+//    Eigen::SparseMatrix<mfloat> EigenAAT = EigenA.transpose()*EigenA;
+//
+//    cout << EigenA << endl;
+//    QP_space->EigenQ = get_eigen_spMat(QP_space->Q);
+//    QP_space->EigenI.resize(n, n);
+//    QP_space->EigenI.setIdentity();
+//    QP_space->EigenIQ = 1/QP_space->sigma*QP_space->EigenI + QP_space->EigenQ;
 //    EigenQ = 1/QP_space->sigma*EigenQ + EigenQ*EigenQ;
 
 
@@ -593,39 +604,39 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
 //    cout << EigenAAT << endl;
 
     // Eigen is using column major
-    Eigen::SparseMatrix<double> upperMatAAT = EigenAAT.triangularView<Eigen::Lower>();
-//    upperMat = upperMat.transpose();
-
-    QP_space->AAT.nRow = m; QP_space->AAT.nCol = m;
-    int nnz = upperMatAAT.nonZeros();
-    QP_space->AAT.rowStart = new int [m+1];
-    QP_space->AAT.column = new int [nnz];
-    QP_space->AAT.value = new mfloat [nnz];
-    vMemcpy(upperMatAAT.outerIndexPtr(), m+1, QP_space->AAT.rowStart);
-//    QP_space->AAT.rowStart[1] = 2;
-//    cout << QP_space->AAT.rowStart[0] << QP_space->AAT.rowStart[1] << QP_space->AAT.rowStart[2] << endl;
-    vMemcpy(upperMatAAT.innerIndexPtr(), upperMatAAT.nonZeros(), QP_space->AAT.column);
-//    cout << QP_space->AAT.column[0] << QP_space->AAT.column[1] << QP_space->AAT.column[2] << endl;
-//    QP_space->AAT.column[1] = 1;
-    vMemcpy(upperMatAAT.valuePtr(), upperMatAAT.nonZeros(), QP_space->AAT.value);
-//    cout << QP_space->AAT.value[0] << QP_space->AAT.value[1] << QP_space->AAT.value[2] << endl;
-
-    cout << upperMatAAT << endl;
-    QP_space->PDS_A = new PARDISO_var;
-    PARDISO_init(QP_space->PDS_A, QP_space->AAT);
-    PARDISO_numerical_fact(QP_space->PDS_A);
-
-
-    QP_space->EigenIQ = 1/QP_space->sigma*QP_space->EigenI + QP_space->EigenQ;
-    QP_space->upperMatQ = QP_space->EigenIQ.triangularView<Eigen::Lower>();
-    cout << QP_space->upperMatQ << endl;
-    QP_space->IQ.nRow = n; QP_space->IQ.nCol = n;
-    QP_space->IQ.rowStart = QP_space->upperMatQ.outerIndexPtr();
-    QP_space->IQ.column = QP_space->upperMatQ.innerIndexPtr();
-    QP_space->IQ.value = QP_space->upperMatQ.valuePtr();
-    QP_space->PDS_IQ = new PARDISO_var;
-    PARDISO_init(QP_space->PDS_IQ, QP_space->IQ);
-    PARDISO_numerical_fact(QP_space->PDS_IQ);
+//    Eigen::SparseMatrix<double> upperMatAAT = EigenAAT.triangularView<Eigen::Lower>();
+////    upperMat = upperMat.transpose();
+//
+//    QP_space->AAT.nRow = m; QP_space->AAT.nCol = m;
+//    int nnz = upperMatAAT.nonZeros();
+//    QP_space->AAT.rowStart = new int [m+1];
+//    QP_space->AAT.column = new int [nnz];
+//    QP_space->AAT.value = new mfloat [nnz];
+//    vMemcpy(upperMatAAT.outerIndexPtr(), m+1, QP_space->AAT.rowStart);
+////    QP_space->AAT.rowStart[1] = 2;
+////    cout << QP_space->AAT.rowStart[0] << QP_space->AAT.rowStart[1] << QP_space->AAT.rowStart[2] << endl;
+//    vMemcpy(upperMatAAT.innerIndexPtr(), upperMatAAT.nonZeros(), QP_space->AAT.column);
+////    cout << QP_space->AAT.column[0] << QP_space->AAT.column[1] << QP_space->AAT.column[2] << endl;
+////    QP_space->AAT.column[1] = 1;
+//    vMemcpy(upperMatAAT.valuePtr(), upperMatAAT.nonZeros(), QP_space->AAT.value);
+////    cout << QP_space->AAT.value[0] << QP_space->AAT.value[1] << QP_space->AAT.value[2] << endl;
+//
+//    cout << upperMatAAT << endl;
+//    QP_space->PDS_A = new PARDISO_var;
+//    PARDISO_init(QP_space->PDS_A, QP_space->AAT);
+//    PARDISO_numerical_fact(QP_space->PDS_A);
+//
+//
+//    QP_space->EigenIQ = 1/QP_space->sigma*QP_space->EigenI + QP_space->EigenQ;
+//    QP_space->upperMatQ = QP_space->EigenIQ.triangularView<Eigen::Lower>();
+//    cout << QP_space->upperMatQ << endl;
+//    QP_space->IQ.nRow = n; QP_space->IQ.nCol = n;
+//    QP_space->IQ.rowStart = QP_space->upperMatQ.outerIndexPtr();
+//    QP_space->IQ.column = QP_space->upperMatQ.innerIndexPtr();
+//    QP_space->IQ.value = QP_space->upperMatQ.valuePtr();
+//    QP_space->PDS_IQ = new PARDISO_var;
+//    PARDISO_init(QP_space->PDS_IQ, QP_space->IQ);
+//    PARDISO_numerical_fact(QP_space->PDS_IQ);
 }
 
 void sGSADMM_QP_update_y_first(QP_struct *QP_space) {
@@ -643,8 +654,12 @@ void sGSADMM_QP_update_y_first(QP_struct *QP_space) {
 
     axpy(-1, QP_space->A_times_z_Qw_c, rhs, rhs, m);
 
-    PARDISO_solve(QP_space->PDS_A, rhs);
-    vMemcpy(QP_space->PDS_A->x, n, QP_space->y_bar);
+    vMemcpy(rhs, m, QP_space->Eigen_rhs_y.data());
+    QP_space->Eigen_result_y = QP_space->Eigen_linear_AAT.LLTsolver.solve(QP_space->Eigen_rhs_y);
+    vMemcpy(QP_space->Eigen_result_y.data(), m, QP_space->y_bar);
+
+//            PARDISO_solve(QP_space->PDS_A, rhs);
+//    vMemcpy(QP_space->PDS_A->x, n, QP_space->y_bar);
 }
 
 void sGSADMM_QP_update_y_second(QP_struct *QP_space) {
@@ -662,8 +677,13 @@ void sGSADMM_QP_update_y_second(QP_struct *QP_space) {
 
     axpy(-1, QP_space->A_times_z_Qw_c, rhs, rhs, m);
 
-    PARDISO_solve(QP_space->PDS_A, rhs);
-    vMemcpy(QP_space->PDS_A->x, n, QP_space->y);
+
+    vMemcpy(rhs, m, QP_space->Eigen_rhs_y.data());
+    QP_space->Eigen_result_y = QP_space->Eigen_linear_AAT.LLTsolver.solve(QP_space->Eigen_rhs_y);
+    vMemcpy(QP_space->Eigen_result_y.data(), m, QP_space->y);
+
+//    PARDISO_solve(QP_space->PDS_A, rhs);
+//    vMemcpy(QP_space->PDS_A->x, n, QP_space->y);
 }
 
 void sGSADMM_QP_update_w_first(QP_struct *QP_space) {
@@ -678,9 +698,17 @@ void sGSADMM_QP_update_w_first(QP_struct *QP_space) {
 
     axpy(1/QP_space->sigma, QP_space->x, QP_space->z_ATy_c, rhs, n);
 
+
+    vMemcpy(rhs, n, QP_space->Eigen_rhs_w.data());
+    QP_space->Eigen_result_w = QP_space->Eigen_linear_IQ.LLTsolver.solve(QP_space->Eigen_rhs_w);
+    vMemcpy(QP_space->Eigen_result_w.data(), n, QP_space->w_bar);
+
+
 //    spMV_R(QP_space->Q, rhs, n, n, rhs2);
-    PARDISO_solve(QP_space->PDS_IQ, rhs);
-    vMemcpy(QP_space->PDS_IQ->x, n, QP_space->w_bar);
+
+
+//    QP_space->Eigen_linear_IQ.LLTsolver.solve(rhs);
+//    vMemcpy(QP_space->PDS_IQ->x, n, QP_space->w_bar);
 }
 
 void sGSADMM_QP_update_w_second(QP_struct *QP_space) {
@@ -691,8 +719,13 @@ void sGSADMM_QP_update_w_second(QP_struct *QP_space) {
 //    spMV_R(QP_space->Q, QP_space->dz, n, n, QP_space->Qdz);
     axpy(1, QP_space->dz, rhs, rhs, n);
 
-    PARDISO_solve(QP_space->PDS_IQ, rhs);
-    vMemcpy(QP_space->PDS_IQ->x, n, QP_space->w);
+
+    vMemcpy(rhs, n, QP_space->Eigen_rhs_w.data());
+    QP_space->Eigen_result_w = QP_space->Eigen_linear_IQ.LLTsolver.solve(QP_space->Eigen_rhs_w);
+    vMemcpy(QP_space->Eigen_result_w.data(), n, QP_space->w);
+
+//    PARDISO_solve(QP_space->PDS_IQ, rhs);
+//    vMemcpy(QP_space->PDS_IQ->x, n, QP_space->w);
 }
 
 void sGSADMM_QP_update_z(QP_struct *QP_space) {
@@ -768,10 +801,14 @@ void sGSADMM_QP_refact_IQ(QP_struct* QP_space) {
 //    QP_space->PDS_IQ->ja = QP_space->IQ.column;
     mfloat inv_sigma_old = 1/QP_space->sigma_old;
     mfloat inv_sigma = 1/QP_space->sigma;
-    for (int i = 0; i < QP_space->n; ++i) {
-        QP_space->PDS_IQ->a[QP_space->PDS_IQ->ia[i]-1] += -inv_sigma_old + inv_sigma;
-    }
-    PARDISO_numerical_fact(QP_space->PDS_IQ);
+    QP_space->EigenIQ -= inv_sigma_old*QP_space->EigenI;
+    QP_space->EigenIQ += inv_sigma*QP_space->EigenI;
+//    for (int i = 0; i < QP_space->n; ++i) {
+//        QP_space->PDS_IQ->a[QP_space->PDS_IQ->ia[i]-1] += -inv_sigma_old + inv_sigma;
+
+//    }
+    QP_space->Eigen_linear_IQ.LLTsolver.factorize(QP_space->EigenIQ);
+//    PARDISO_numerical_fact(QP_space->PDS_IQ);
 }
 
 void sGSADMM_QP_print_status(QP_struct* QP_space) {
@@ -796,6 +833,8 @@ mfloat support_function(const mfloat* x, const mfloat* l, const mfloat* u, int l
             else res += -x[i] * l[i];
         }
     }
+
+    return res;
 }
 
 
@@ -969,9 +1008,9 @@ void initial_SNAL() {
 void SNAL_new() {
 }
 
-bool collect_infeasibility() {
-
-}
+//bool collect_infeasibility() {
+//
+//}
 void create_SSNCG() {
 }
 
@@ -985,8 +1024,8 @@ void find_step(int stepopt) {
 }
 
 
-bool check_termination_SSN(int iter) {
-}
+//bool check_termination_SSN(int iter) {
+//}
 
 
 void update_sigma(QP_struct *QP_space) {
@@ -1034,18 +1073,18 @@ void print_spM(sparseRowMatrix input) {
     }
 }
 
-Eigen::SparseMatrix<mfloat> get_eigen_spMat(sparseRowMatrix BT) {
+Eigen::SparseMatrix<mfloat> get_eigen_spMat(sparseRowMatrix B) {
     typedef Eigen::Triplet<mfloat> T;
     std::vector<T> tripletList;
-    tripletList.reserve(BT.nRow*2);
-    int *colStart = BT.rowStart;
-    mfloat *value = BT.value;
-    int *row = BT.column;
-    for (int i = 0; i < BT.nRow; ++i) {
-        for (int j = colStart[i]; j < colStart[i+1]; ++j)
-            tripletList.emplace_back(row[j],i,value[j]);
+    tripletList.reserve(B.rowStart[B.nRow]);
+    int *rowStart = B.rowStart;
+    mfloat *value = B.value;
+    int *column = B.column;
+    for (int i = 0; i < B.nRow; ++i) {
+        for (int j = rowStart[i]; j < rowStart[i+1]; ++j)
+            tripletList.emplace_back(i, column[j],value[j]);
     }
-    Eigen::SparseMatrix<mfloat> mat(BT.nCol, BT.nRow);
+    Eigen::SparseMatrix<mfloat> mat(B.nRow, B.nCol);
     mat.setFromTriplets(tripletList.begin(), tripletList.end());
     return mat;
 // mat is ready to go!
@@ -1093,6 +1132,28 @@ void ADMM() {
 void update_sigma_admm(){
 }
 
+void Eigen_init(QP_struct *QP_space) {
+    Eigen::SparseMatrix<mfloat> EigenA = get_eigen_spMat(QP_space->A);
+    Eigen::SparseMatrix<mfloat> EigenAT = get_eigen_spMat(QP_space->AT);
+    Eigen::SparseMatrix<mfloat> EigenAAT = EigenA*EigenA.transpose();
+
+    QP_space->Eigen_rhs_w.resize(QP_space->n, 1);
+    QP_space->Eigen_result_w.resize(QP_space->n, 1);
+    QP_space->Eigen_rhs_y.resize(QP_space->m, 1);
+    QP_space->Eigen_result_y.resize(QP_space->m, 1);
+//    cout << EigenA << endl;
+//    cout << EigenAAT << endl;
+    QP_space->EigenQ = get_eigen_spMat(QP_space->Q);
+    QP_space->EigenI.resize(QP_space->n, QP_space->n);
+    QP_space->EigenI.setIdentity();
+    QP_space->EigenIQ = 1/QP_space->sigma*QP_space->EigenI + QP_space->EigenQ;
+
+    QP_space->Eigen_linear_AAT.LLTsolver.analyzePattern(EigenAAT);
+    QP_space->Eigen_linear_AAT.LLTsolver.factorize(EigenAAT);
+    QP_space->Eigen_linear_IQ.LLTsolver.analyzePattern(QP_space->EigenIQ);
+    QP_space->Eigen_linear_IQ.LLTsolver.factorize(QP_space->EigenIQ);
+}
+
 int PARDISO_init(PARDISO_var *PDS, sparseRowMatrix A) {
     PDS->n = A.nRow;
     if (A.nRow != A.nCol) {
@@ -1117,7 +1178,7 @@ int PARDISO_init(PARDISO_var *PDS, sparseRowMatrix A) {
 
     PDS->error = 0;
     PDS->solver = 0; /* use sparse direct solver */
-    pardisoinit (PDS->pt,  &(PDS->mtype), &(PDS->solver), PDS->iparm, PDS->dparm, &(PDS->error));
+//    pardisoinit (PDS->pt,  &(PDS->mtype), &(PDS->solver), PDS->iparm, PDS->dparm, &(PDS->error));
 
     if (PDS->error != 0)
     {
@@ -1165,7 +1226,7 @@ int PARDISO_init(PARDISO_var *PDS, sparseRowMatrix A) {
 /* -------------------------------------------------------------------- */
 
     if (PDS->debug) {
-        pardiso_chkmatrix  (&(PDS->mtype), &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->error));
+//        pardiso_chkmatrix  (&(PDS->mtype), &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->error));
         if (PDS->error != 0) {
             printf("\nERROR in consistency of matrix: %d", PDS->error);
             exit(1);
@@ -1181,7 +1242,7 @@ int PARDISO_init(PARDISO_var *PDS, sparseRowMatrix A) {
 /* -------------------------------------------------------------------- */
 
     if (PDS->debug) {
-        pardiso_chkvec(&(PDS->n), &(PDS->nrhs), PDS->b, &(PDS->error));
+//        pardiso_chkvec(&(PDS->n), &(PDS->nrhs), PDS->b, &(PDS->error));
         if (PDS->error != 0) {
             printf("\nERROR  in right hand side: %d", PDS->error);
             exit(1);
@@ -1194,7 +1255,7 @@ int PARDISO_init(PARDISO_var *PDS, sparseRowMatrix A) {
 /* -------------------------------------------------------------------- */
 
     if (PDS->debug) {
-        pardiso_printstats(&(PDS->mtype), &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->nrhs), PDS->b, &(PDS->error));
+//        pardiso_printstats(&(PDS->mtype), &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->nrhs), PDS->b, &(PDS->error));
         if (PDS->error != 0) {
             printf("\nERROR right hand side: %d", PDS->error);
             exit(1);
@@ -1206,9 +1267,9 @@ int PARDISO_init(PARDISO_var *PDS, sparseRowMatrix A) {
 /* -------------------------------------------------------------------- */
     PDS->phase = 11;
 
-    pardiso (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
-             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs),
-             PDS->iparm, &(PDS->msglvl), &(PDS->ddum), &(PDS->ddum), &(PDS->error), PDS->dparm);
+//    pardiso (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
+//             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs),
+//             PDS->iparm, &(PDS->msglvl), &(PDS->ddum), &(PDS->ddum), &(PDS->error), PDS->dparm);
 
     if (PDS->error != 0) {
         printf("\nERROR during symbolic factorization: %d", PDS->error);
@@ -1228,9 +1289,9 @@ int PARDISO_numerical_fact(PARDISO_var *PDS) {
     PDS->phase = 22;
     PDS->iparm[32] = 0; /* compute determinant */
 
-    pardiso (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
-             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs),
-             PDS->iparm, &(PDS->msglvl), &(PDS->ddum), &(PDS->ddum), &(PDS->error), PDS->dparm);
+//    pardiso (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
+//             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs),
+//             PDS->iparm, &(PDS->msglvl), &(PDS->ddum), &(PDS->ddum), &(PDS->error), PDS->dparm);
 
     if (PDS->error != 0) {
         printf("\nERROR during numerical factorization: %d", PDS->error);
@@ -1257,9 +1318,9 @@ int PARDISO_solve(PARDISO_var *PDS, mfloat *rhs) {
     PDS->b = new mfloat [PDS->n];
     vMemcpy(rhs, PDS->n, PDS->b);
 
-    pardiso (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
-             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs),
-             PDS->iparm, &(PDS->msglvl), PDS->b, PDS->x, &(PDS->error), PDS->dparm);
+//    pardiso (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
+//             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs),
+//             PDS->iparm, &(PDS->msglvl), PDS->b, PDS->x, &(PDS->error), PDS->dparm);
 
     if (PDS->error != 0) {
         printf("\nERROR during solution: %d", PDS->error);
@@ -1282,9 +1343,9 @@ int PARDISO_release(PARDISO_var *PDS) {
     /* -------------------------------------------------------------------- */
     PDS->phase = -1;                 /* Release internal memory. */
 
-    pardiso (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
-             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs),
-             PDS->iparm, &(PDS->msglvl), &(PDS->ddum), &(PDS->ddum), &(PDS->error), PDS->dparm);
+//    pardiso (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
+//             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs),
+//             PDS->iparm, &(PDS->msglvl), &(PDS->ddum), &(PDS->ddum), &(PDS->error), PDS->dparm);
 
     printf("\nRelease completed ... ");
 

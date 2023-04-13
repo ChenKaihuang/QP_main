@@ -1,11 +1,37 @@
 cmake_minimum_required(VERSION 3.16)
 project(QP)
-include(FindBLAS)
 
-set(CMAKE_CXX_STANDARD 14)
+find_package(Python3 COMPONENTS Interpreter Development REQUIRED)
+include_directories(${Python3_INCLUDE_DIRS})
 
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -O3")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -O3")
+# Set the name and type of your shared library
+add_library(QP_library SHARED
+        algorithm.cpp
+        # ... add more source files as needed
+        QP_wrapper.cpp)
+
+# Link against Python libraries
+target_link_libraries(QP_library PRIVATE Python3::Python)
+
+# Set the output name and extension of the Python module
+set_target_properties(QP_library PROPERTIES
+        OUTPUT_NAME QP_library
+        SUFFIX .so  # Use .dll for Windows or .pyd for Python on Windows
+        )
+
+# Set the target directory for the Python module
+set_target_properties(QP_library PROPERTIES
+        LIBRARY_OUTPUT_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        )
+
+# Set the compilation options
+target_compile_options(QP_library PRIVATE -Wall -Xlinker -export-dynamic)
+
+# Install the Python module to the site-packages directory
+install(TARGETS QP_library
+        LIBRARY DESTINATION ${Python3_SITELIB})
+
+
 
 add_executable(QP main.cpp algorithm.cpp algorithm.h utils.h)
 

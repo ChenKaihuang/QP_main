@@ -23,14 +23,14 @@
 #define mfloat double
 #define NUM_THREADS_OpenMP 8
 
-extern "C" void pardisoinit (void   *, int    *,   int *, int *, double *, int *);
-extern "C" void pardiso     (void   *, int    *,   int *, int *,    int *, int *,
-                             double *, int    *,    int *, int *,   int *, int *,
-                             int *, double *, double *, int *, double *);
-extern "C" void pardiso_chkmatrix  (int *, int *, double *, int *, int *, int *);
-extern "C" void pardiso_chkvec     (int *, int *, double *, int *);
-extern "C" void pardiso_printstats (int *, int *, double *, int *, int *, int *,
-                                    double *, int *);
+//extern "C" void pardisoinit (void   *, int    *,   int *, int *, double *, int *);
+//extern "C" void pardiso     (void   *, int    *,   int *, int *,    int *, int *,
+//                             double *, int    *,    int *, int *,   int *, int *,
+//                             int *, double *, double *, int *, double *);
+////extern "C" void pardiso_chkmatrix  (int *, int *, double *, int *, int *, int *);
+//extern "C" void pardiso_chkvec     (int *, int *, double *, int *);
+//extern "C" void pardiso_printstats (int *, int *, double *, int *, int *, int *,
+//                                    double *, int *);
 
 typedef struct {
     bool isEmpty;
@@ -98,10 +98,14 @@ typedef struct {
     mfloat *RQ, *RC;
     Eigen::SparseMatrix<mfloat> EigenI, EigenQ, EigenIQ;
     Eigen::SparseMatrix<mfloat> upperMatQ;
+    linearSolver Eigen_linear_AAT, Eigen_linear_IQ;
     int iter, maxADMMiter;
+    Eigen::VectorX<mfloat> Eigen_rhs_w, Eigen_rhs_y, Eigen_result_w, Eigen_result_y;
 } QP_struct;
 
-void sGSADMM_QP(QP_struct *QP_space);
+void Eigen_init(QP_struct *QP_space);
+
+void sGSADMM_QP(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat* l, mfloat* u, int m, int n);
 
 void sGSADMM_QP_init(QP_struct *QP_space);
 
