@@ -77,6 +77,10 @@ typedef struct {
     int *ia, *ja, iparm[64], error, solver;
 } PARDISO_var;
 
+typedef struct input_parameters {
+    int max_ADMM_iter = -1;
+} input_parameters;
+
 typedef struct {
     // input: 1/2 xQx + cx, s.t. Ax = b x \in C = [l, u]
     // quadratic matrix Q and constraint matrix A;
@@ -96,6 +100,7 @@ typedef struct {
     mfloat *update_z_unProjected, *update_z_projected;
     mfloat inf_p, inf_d, inf_Q, inf_C, inf_g, primal_obj, dual_obj, infty_z;
     mfloat *RQ, *RC;
+    input_parameters input_para;
     Eigen::SparseMatrix<mfloat> EigenI, EigenQ, EigenIQ;
     Eigen::SparseMatrix<mfloat> upperMatQ;
     linearSolver Eigen_linear_AAT, Eigen_linear_IQ;
@@ -105,7 +110,7 @@ typedef struct {
 
 void Eigen_init(QP_struct *QP_space);
 
-void sGSADMM_QP(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat* l, mfloat* u, int m, int n);
+void sGSADMM_QP(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat* l, mfloat* u, int m, int n, input_parameters para);
 
 void sGSADMM_QP_init(QP_struct *QP_space);
 

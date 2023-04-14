@@ -515,11 +515,12 @@ void simple_QP_test() {
 
     QP_space->m = 2; QP_space->n = 2;
 
-    sGSADMM_QP(Q, A, QP_space->b, QP_space->c, QP_space->l, QP_space->u, QP_space->m, QP_space->n);
+    input_parameters para;
+    sGSADMM_QP(Q, A, QP_space->b, QP_space->c, QP_space->l, QP_space->u, QP_space->m, QP_space->n, para);
 }
 
 
-void sGSADMM_QP(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat* l, mfloat* u, int m, int n) {
+void sGSADMM_QP(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat* l, mfloat* u, int m, int n, input_parameters para) {
     QP_struct *QP_space = new QP_struct;
     QP_space->Q = Q;
     QP_space->A = A;
@@ -529,6 +530,7 @@ void sGSADMM_QP(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mflo
     QP_space->u = u;
     QP_space->m = m;
     QP_space->n = n;
+    QP_space->input_para = para;
     sGSADMM_QP_init(QP_space);
 
     while (QP_space->iter < QP_space->maxADMMiter) {
@@ -583,7 +585,12 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
     QP_space->update_z_unProjected = new mfloat [n];
     QP_space->update_z_projected = new mfloat [n];
     QP_space->iter = 0;
-    QP_space->maxADMMiter = 200;
+
+    if (QP_space->input_para.max_ADMM_iter != -1)
+        QP_space->maxADMMiter = QP_space->input_para.max_ADMM_iter;
+    else
+        QP_space->maxADMMiter = 1000;
+
     QP_space->AT = get_BT(QP_space->A);
 
     Eigen_init(QP_space);

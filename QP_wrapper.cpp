@@ -9,8 +9,9 @@ static PyObject* py_QP_solve(PyObject* self, PyObject* args) {
     PyObject *Q_value, *Q_rowStart, *Q_column;
     PyObject *A_value, *A_rowStart, *A_column;
     PyObject *py_b, *py_c, *py_l, *py_u;
+    PyObject *inputDict;
 
-    if (!PyArg_ParseTuple(args, "OOOOOOOOOO", &Q_value, &Q_rowStart, &Q_column, &A_value, &A_rowStart, &A_column, &py_b, &py_c, &py_l, &py_u)) {
+    if (!PyArg_ParseTuple(args, "OOOOOOOOOOO", &Q_value, &Q_rowStart, &Q_column, &A_value, &A_rowStart, &A_column, &py_b, &py_c, &py_l, &py_u, &inputDict)) {
         std::cout << "error" << std::endl;
         return NULL;
     }
@@ -81,7 +82,7 @@ static PyObject* py_QP_solve(PyObject* self, PyObject* args) {
 
     int Q_nnz = PyList_Size(Q_value);
     Q.nRow = n; Q.nCol = n;
-    Q.rowStart = new int [n];
+    Q.rowStart = new int [n+1];
     Q.column = new int [Q_nnz];
     Q.value = new mfloat [Q_nnz];
 
@@ -101,7 +102,7 @@ static PyObject* py_QP_solve(PyObject* self, PyObject* args) {
 //    print_spM(Q);
     int A_nnz = PyList_Size(A_column);
     A.nRow = m; A.nCol = n;
-    A.rowStart = new int [m];
+    A.rowStart = new int [m+1];
     A.column = new int [A_nnz];
     A.value = new mfloat [A_nnz];
 
@@ -136,8 +137,15 @@ static PyObject* py_QP_solve(PyObject* self, PyObject* args) {
         u[i] = PyFloat_AsDouble(item);
     }
 
+    input_parameters para;
+    PyObject* maxADMMiter = PyDict_GetItemString(inputDict, "maxADMMiter");
+    if (maxADMMiter) {
+        if (!PyArg_Parse(maxADMMiter, "i", &(para.max_ADMM_iter))) {
+            return NULL;
+        }
+    }
 
-    sGSADMM_QP(Q, A, b, c, l, u, m, n);
+    sGSADMM_QP(Q, A, b, c, l, u, m, n, para);
     return PyLong_FromLong(0);
 }
 
