@@ -48,12 +48,6 @@ typedef struct {
     int* vec;
 } spVec_int;
 
-typedef struct {
-    mfloat *x,*r,*z,*p,*Ap;
-    int dim_n, dim_d, max_iter, nCGs;
-    mfloat tol, cgTime;
-    linearSolver LLT;
-} CG_struct;
 
 typedef struct {
     int nRow;
@@ -63,6 +57,21 @@ typedef struct {
     int* rowLength;
     int* column;
 } sparseRowMatrix;
+
+typedef struct BiCG_struct{
+    mfloat *x,*r,*p,*Ap, *v, *r0, *p_hat, *s, *s_hat, *t;
+    int dim_n, max_iter = 100, nCGs;
+    mfloat tol = 1e-6, cgTime, error;
+    linearSolver LLT;
+    sparseRowMatrix A;
+} BiCG_struct;
+
+typedef struct {
+    mfloat *x,*r,*z,*p,*Ap,*Atp;
+    int dim_n, dim_d, max_iter, nCGs;
+    mfloat tol, cgTime;
+    linearSolver LLT;
+} CG_struct;
 
 typedef struct {
     /* Internal solver memory pointer pt,                  */
@@ -116,6 +125,8 @@ void sGSADMM_QP_init(QP_struct *QP_space);
 
 void simple_QP_test();
 
+void BiCG_test();
+
 void sGSADMM_QP_update_y_first(QP_struct *QP_space);
 void sGSADMM_QP_update_y_second(QP_struct *QP_space);
 
@@ -131,6 +142,7 @@ void sGSADMM_QP_compute_status(QP_struct *QP_space);
 void sGSADMM_QP_print_status(QP_struct* QP_space);
 
 void sGSADMM_QP_refact_IQ(QP_struct* QP_space);
+
 
 /// support function of -x
 mfloat support_function(const mfloat* x, const mfloat* l, const mfloat* u, int len, mfloat* infty_x);
@@ -237,11 +249,23 @@ void create_PCG();
 /// Preconditioned Conjugate gradient method for AX = RHS, matrix level.
 void PCG(const mfloat* x0, const mfloat* rhs, CG_struct* CG_space, mfloat* output);
 
+/// Bi-conjugate gradient method for Ax = b, non-symmetric A.
+void BiCG(const mfloat* x0, const mfloat* rhs, BiCG_struct* CG_space, mfloat* output);
+
+/// initialize BiCG
+void BiCG_init(BiCG_struct* CG_space);
+
 /// arrange memory for My_CG
 void create_My_CG();
 
 /// Compute M*y for CG
 void My_CG();
+
+/// Compute Ax for BiCG
+void BiCG_prod(const mfloat *x, mfloat* output, BiCG_struct *BiCG_space);
+
+/// Compute A'y for BiCG
+void My_BiCG_T(const mfloat *x, mfloat* output);
 
 /// create dense m-by-n matrix
 Mat creat_Mat(int m, int n);
@@ -292,6 +316,9 @@ Eigen::SparseMatrix<mfloat> get_eigen_spMat(sparseRowMatrix BT);
 
 /// compute the L^{-1} * r;
 void precond_CG(CG_struct* CG_space);
+
+/// compute the L^{-1} * r;
+void precond_BiCG(const mfloat* input, mfloat* output, BiCG_struct* CG_space);
 
 /// initialize Eigen variable for cholesky.
 void initial_Eigen();

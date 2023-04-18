@@ -479,6 +479,30 @@ void My_CG() {
 void create_PCG() {
 }
 
+void BiCG_test() {
+    QP_struct *QP_space = new QP_struct;
+    sparseRowMatrix Q;
+    Q.value = new mfloat [4];
+    Q.nRow = 2; Q.nCol = 2;
+    Q.value[0] = 4; Q.value[1] = 2; Q.value[2] = 2; Q.value[3] = 6;
+    Q.rowStart = new int [3];
+    Q.rowStart[0] = 0; Q.rowStart[1] = 2; Q.rowStart[2] = 4;
+    Q.column = new int [4];
+    Q.column[0] = 0; Q.column[1] = 1; Q.column[2] = 0; Q.column[3] = 1;
+
+    BiCG_struct *BiCG_space = new BiCG_struct;
+    BiCG_space->A = Q;
+    BiCG_space->dim_n = 2;
+    BiCG_init(BiCG_space);
+    mfloat *x0 = new mfloat [2];
+    x0[0] = 0; x0[1] = 0;
+    mfloat *rhs = new mfloat [2];
+    rhs[0] = 1; rhs[1] = 1;
+    mfloat *output = new mfloat [2];
+    BiCG(x0, rhs, BiCG_space, output);
+    cout << output[0] << ' ' << output[1] << endl;
+}
+
 void simple_QP_test() {
     QP_struct *QP_space = new QP_struct;
     sparseRowMatrix Q;
@@ -906,6 +930,103 @@ void PCG(const mfloat* x0, const mfloat* rhs, CG_struct* CG_space, mfloat* outpu
     std::cout << "\nCG iteration at maximum " << CG_space->max_iter << " res " << res_temp << std::endl;
     vMemcpy(x_pcg, n*d, output);
 //    return x_pcg;
+}
+
+void BiCG_prod(const mfloat *x, mfloat* output, BiCG_struct *BiCG_space) {
+    spMV_R(BiCG_space->A, x, BiCG_space->A.nRow, BiCG_space->A.nCol, output);
+}
+
+void BiCG_init(BiCG_struct* CG_space) {
+    int n = CG_space->dim_n;
+    CG_space->x = new mfloat [n];
+    CG_space->r = new mfloat [n];
+    CG_space->r0 = new mfloat [n];
+    CG_space->p_hat = new mfloat [n];
+    CG_space->s = new mfloat [n];
+    CG_space->s_hat = new mfloat [n];
+    CG_space->t = new mfloat [n];
+    CG_space->p = new mfloat [n];
+    CG_space->Ap = new mfloat [n];
+    CG_space->v = new mfloat [n];
+}
+
+void precond_BiCG(const mfloat* input, mfloat* output, BiCG_struct* CG_space) {
+    vMemcpy(input, CG_space->dim_n, output);
+}
+
+void BiCG(const mfloat* x0, const mfloat* rhs, BiCG_struct* CG_space, mfloat* output) {
+    int n = CG_space->dim_n;
+    mfloat tol = CG_space->tol;
+    double *x = CG_space->x, *r = CG_space->r;
+    mfloat *r0 = CG_space->r0, *p_hat = CG_space->p_hat, *s = CG_space->s;
+    mfloat *s_hat = CG_space->s_hat, *t = CG_space->t;
+    double *p = CG_space->p, *Ap = CG_space->Ap, *v = CG_space->v;
+    mfloat rho_old = 1, alpha = 1, omega = 1;
+    mfloat bnorm = norm2(rhs, n)+1;
+//    for (int i = 0; i < n; ++i) {
+//        v[i] = 0;
+//        p[i] = 0;
+//    }
+    BiCG_prod(x0, Ap, CG_space);
+    cout << Ap[0] << ' ' << Ap[1] << endl;
+    axpy(-1, Ap, rhs, r, n);
+    vMemcpy(r, n, r0);
+
+    int iter = 1;
+    mfloat rho = 1;
+    mfloat beta = 1;
+    mfloat res = norm2(r0, n);
+    if (res/bnorm < tol) {
+//        printf("      %3d", 0);
+        cout << "BiCG input is okay" << endl;
+        vMemcpy(x, n, output);
+        return;
+    }
+    while (iter < CG_space->max_iter) {
+        rho = xTy(r, r0, n);
+        if (iter > 1) {
+            beta = rho/rho_old*alpha/omega;
+            axpy(-omega, v, p, p, n);
+            axpy(beta, p, r, p, n);
+        } else {
+            vMemcpy(r, n, p);
+        }
+
+        precond_BiCG(p, p_hat, CG_space);
+
+        BiCG_prod(p, v, CG_space);
+        alpha = rho/ xTy(r0, v, n);
+//        axpy(alpha, p_pcg, x_pcg, h, n);
+
+        axpy(-alpha, v, r, s, n);
+        mfloat norms = norm2(s, n);
+        if (norms < tol) {
+            axpy(alpha, p_hat, x, x, n);
+            res = norms/bnorm;
+            vMemcpy(x, n, output);
+            return;
+        }
+
+        precond_BiCG(s, s_hat, CG_space);
+        BiCG_prod(s_hat, t, CG_space);
+        omega = xTy(t, s, n)/xTy(t, t, n);
+        axpy(alpha, p_hat, x, x, n);
+        axpy(omega, s_hat, x, x, n);
+
+        axpy(-omega, t, s, r, n);
+        CG_space->error = norm2(r, n)/bnorm;
+        printf("iter %d err %f\n", iter, CG_space->error);
+        if (CG_space->error < tol) {
+            vMemcpy(x, n, output);
+            return;
+        }
+
+        if (omega < 1e-10) {
+            cout << "omega = 0 in BiCG" << endl;
+        }
+        rho_old = rho;
+        iter++;
+    }
 }
 
 
