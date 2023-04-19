@@ -43,9 +43,9 @@ typedef struct {
     mfloat* vec;
 } Mat;
 
-typedef struct {
-    int number;
-    int* vec;
+typedef struct sparse_vec_int{
+    int number = 0;
+    int* vec = nullptr;
 } spVec_int;
 
 
@@ -60,10 +60,11 @@ typedef struct {
 
 typedef struct BiCG_struct{
     mfloat *x,*r,*p,*Ap, *v, *r0, *p_hat, *s, *s_hat, *t;
-    int dim_n, max_iter = 100, nCGs;
+    int dim_n, max_iter = 100, nCGs, dim_m;
     mfloat tol = 1e-6, cgTime, error;
     linearSolver LLT;
-    sparseRowMatrix A;
+    spVec_int U_idx;
+    mfloat *BiCG_prod_temp1, *BiCG_prod_temp2;
 } BiCG_struct;
 
 typedef struct {
@@ -100,7 +101,7 @@ typedef struct {
 
     // work variables
     sparseRowMatrix AT, AAT, IQ;
-    mfloat *w, *y, *z, *x, sigma, gamma, sigma_old;
+    mfloat *w, *y, *z, *x, sigma, gamma, sigma_old, tau;
     PARDISO_var *PDS_IQ, *PDS_A;
     mfloat *update_y_rhs, *Qw, *ATy, *Ax, *Rd, *Rp, *z_Qw_c, *A_times_z_Qw_c, *dz, *Qx, *Qdz;
     mfloat *z_new;
@@ -143,6 +144,7 @@ void sGSADMM_QP_print_status(QP_struct* QP_space);
 
 void sGSADMM_QP_refact_IQ(QP_struct* QP_space);
 
+void SSN_QP(QP_struct* QP_space);
 
 /// support function of -x
 mfloat support_function(const mfloat* x, const mfloat* l, const mfloat* u, int len, mfloat* infty_x);
@@ -250,7 +252,7 @@ void create_PCG();
 void PCG(const mfloat* x0, const mfloat* rhs, CG_struct* CG_space, mfloat* output);
 
 /// Bi-conjugate gradient method for Ax = b, non-symmetric A.
-void BiCG(const mfloat* x0, const mfloat* rhs, BiCG_struct* CG_space, mfloat* output);
+void BiCG(const mfloat* x0, const mfloat* rhs, mfloat* output, BiCG_struct* CG_space, QP_struct *QP_space);
 
 /// initialize BiCG
 void BiCG_init(BiCG_struct* CG_space);
@@ -262,7 +264,7 @@ void create_My_CG();
 void My_CG();
 
 /// Compute Ax for BiCG
-void BiCG_prod(const mfloat *x, mfloat* output, BiCG_struct *BiCG_space);
+void BiCG_prod(const mfloat *x, mfloat* output, BiCG_struct *BiCG_space, QP_struct *QP_space);
 
 /// Compute A'y for BiCG
 void My_BiCG_T(const mfloat *x, mfloat* output);

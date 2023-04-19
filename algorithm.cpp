@@ -491,16 +491,36 @@ void BiCG_test() {
     Q.column[0] = 0; Q.column[1] = 1; Q.column[2] = 0; Q.column[3] = 1;
 
     BiCG_struct *BiCG_space = new BiCG_struct;
-    BiCG_space->A = Q;
+    QP_space->Q = Q;
+
+    sparseRowMatrix A;
+    A.value = new mfloat [4];
+    A.nRow = 2; A.nCol = 2;
+    A.value[0] = 1; A.value[1] = 1; A.value[2] = 2; A.value[3] = -1;
+    A.rowStart = new int [3];
+    A.rowStart[0] = 0; A.rowStart[1] = 2; A.rowStart[2] = 4;
+    A.column = new int [4];
+    A.column[0] = 0; A.column[1] = 1; A.column[2] = 0; A.column[3] = 1;
+    QP_space->A = A;
+    QP_space->AT = get_BT(A);
     BiCG_space->dim_n = 2;
+    BiCG_space->dim_m = 2;
     BiCG_init(BiCG_space);
-    mfloat *x0 = new mfloat [2];
+    mfloat *x0 = new mfloat [2+2];
     x0[0] = 0; x0[1] = 0;
-    mfloat *rhs = new mfloat [2];
-    rhs[0] = 1; rhs[1] = 1;
-    mfloat *output = new mfloat [2];
-    BiCG(x0, rhs, BiCG_space, output);
-    cout << output[0] << ' ' << output[1] << endl;
+    x0[2] = 0; x0[3] = 0;
+    mfloat *rhs = new mfloat [4];
+    rhs[0] = 1; rhs[1] = 1; rhs[2] = 1; rhs[3] = 1;
+    mfloat *output = new mfloat [4];
+    QP_space->tau = 1;
+    QP_space->sigma = 1;
+    spVec_int U_idx;
+    U_idx.number = 2;
+    U_idx.vec = new int [2];
+    U_idx.vec[0] = 0; U_idx.vec[1] = 1;
+    BiCG_space->U_idx = U_idx;
+    BiCG(x0, rhs, output, BiCG_space, QP_space);
+    cout << output[0] << ' ' << output[1] << ' ' << output[2] << ' ' << output[3] << endl;
 }
 
 void simple_QP_test() {
@@ -932,12 +952,51 @@ void PCG(const mfloat* x0, const mfloat* rhs, CG_struct* CG_space, mfloat* outpu
 //    return x_pcg;
 }
 
-void BiCG_prod(const mfloat *x, mfloat* output, BiCG_struct *BiCG_space) {
-    spMV_R(BiCG_space->A, x, BiCG_space->A.nRow, BiCG_space->A.nCol, output);
+void SSN_QP(QP_struct* QP_space) {
+
+
+
+
+}
+
+void BiCG_prod(const mfloat *x, mfloat* output, BiCG_struct *BiCG_space, QP_struct *QP_space) {
+//    spMV_R(BiCG_space->A, x, BiCG_space->A.nRow, BiCG_space->A.nCol, output);
+    int n = BiCG_space->dim_n, m = BiCG_space->dim_m;
+    mfloat *output1 = output, *output2 = output + n;
+    const mfloat *x1 = x;
+    const mfloat *x2 = x + n;
+    spVec_int U_idx = BiCG_space->U_idx;
+    mfloat *temp1 = BiCG_space->BiCG_prod_temp1;
+    mfloat *temp2 = BiCG_space->BiCG_prod_temp2;
+    mfloat tau = QP_space->tau, sigma = QP_space->sigma;
+    sparseRowMatrix Q = QP_space->Q, AT = QP_space->AT;
+
+    for (int i = 0; i < n; ++i) {
+        temp1[i] = 0;
+        temp2[i] = 0;
+        output1[i] = 0;
+    }
+    for (int i = 0; i < m; ++i) {
+        output2[i] = 0;
+    }
+
+    partial_spMV_R(Q, x1, U_idx.number, n, temp1, U_idx);
+    axpy(1+tau/sigma, x1, temp1, temp1, n);
+    partial_spMV_R(AT, x2, U_idx.number, m, output1, U_idx);
+    axpy(-1, output1, temp1, output1, n);
+
+    partial_spMV_R(Q, x1, U_idx.number, n, temp2, U_idx);
+//    axpy(1+tau/sigma, x1, temp1, temp1, n);
+    partial_spMV_2(AT, temp2, n, m, output2, U_idx);
+
+    partial_spMV_R(AT, x2, U_idx.number, m, temp2, U_idx);
+    partial_spMV_2(AT, temp2, n, m, temp1, U_idx);
+    axpy(tau/sigma, x2, temp1, temp1, m);
+    axpy(-1, output2, temp1, output2, m);
 }
 
 void BiCG_init(BiCG_struct* CG_space) {
-    int n = CG_space->dim_n;
+    int n = CG_space->dim_n + CG_space->dim_m;
     CG_space->x = new mfloat [n];
     CG_space->r = new mfloat [n];
     CG_space->r0 = new mfloat [n];
@@ -948,14 +1007,16 @@ void BiCG_init(BiCG_struct* CG_space) {
     CG_space->p = new mfloat [n];
     CG_space->Ap = new mfloat [n];
     CG_space->v = new mfloat [n];
+    CG_space->BiCG_prod_temp1 = new mfloat [CG_space->dim_n];
+    CG_space->BiCG_prod_temp2 = new mfloat [CG_space->dim_n];
 }
 
 void precond_BiCG(const mfloat* input, mfloat* output, BiCG_struct* CG_space) {
-    vMemcpy(input, CG_space->dim_n, output);
+    vMemcpy(input, CG_space->dim_n+CG_space->dim_m, output);
 }
 
-void BiCG(const mfloat* x0, const mfloat* rhs, BiCG_struct* CG_space, mfloat* output) {
-    int n = CG_space->dim_n;
+void BiCG(const mfloat* x0, const mfloat* rhs, mfloat* output, BiCG_struct* CG_space, QP_struct *QP_space) {
+    int n = CG_space->dim_n + CG_space->dim_m;
     mfloat tol = CG_space->tol;
     double *x = CG_space->x, *r = CG_space->r;
     mfloat *r0 = CG_space->r0, *p_hat = CG_space->p_hat, *s = CG_space->s;
@@ -967,8 +1028,8 @@ void BiCG(const mfloat* x0, const mfloat* rhs, BiCG_struct* CG_space, mfloat* ou
 //        v[i] = 0;
 //        p[i] = 0;
 //    }
-    BiCG_prod(x0, Ap, CG_space);
-    cout << Ap[0] << ' ' << Ap[1] << endl;
+    BiCG_prod(x0, Ap, CG_space, QP_space);
+    cout << Ap[0] << ' ' << Ap[1] << ' ' << Ap[2] << ' ' << Ap[3] << endl;
     axpy(-1, Ap, rhs, r, n);
     vMemcpy(r, n, r0);
 
@@ -984,6 +1045,10 @@ void BiCG(const mfloat* x0, const mfloat* rhs, BiCG_struct* CG_space, mfloat* ou
     }
     while (iter < CG_space->max_iter) {
         rho = xTy(r, r0, n);
+        if (rho < 1e-10) {
+            cout << "BiCG error: rho = 0" << endl;
+            return;
+        }
         if (iter > 1) {
             beta = rho/rho_old*alpha/omega;
             axpy(-omega, v, p, p, n);
@@ -994,7 +1059,7 @@ void BiCG(const mfloat* x0, const mfloat* rhs, BiCG_struct* CG_space, mfloat* ou
 
         precond_BiCG(p, p_hat, CG_space);
 
-        BiCG_prod(p, v, CG_space);
+        BiCG_prod(p_hat, v, CG_space, QP_space);
         alpha = rho/ xTy(r0, v, n);
 //        axpy(alpha, p_pcg, x_pcg, h, n);
 
@@ -1008,14 +1073,14 @@ void BiCG(const mfloat* x0, const mfloat* rhs, BiCG_struct* CG_space, mfloat* ou
         }
 
         precond_BiCG(s, s_hat, CG_space);
-        BiCG_prod(s_hat, t, CG_space);
+        BiCG_prod(s_hat, t, CG_space, QP_space);
         omega = xTy(t, s, n)/xTy(t, t, n);
         axpy(alpha, p_hat, x, x, n);
         axpy(omega, s_hat, x, x, n);
 
         axpy(-omega, t, s, r, n);
         CG_space->error = norm2(r, n)/bnorm;
-        printf("iter %d err %f\n", iter, CG_space->error);
+//        printf("iter %d err %f\n", iter, CG_space->error);
         if (CG_space->error < tol) {
             vMemcpy(x, n, output);
             return;
@@ -1023,10 +1088,13 @@ void BiCG(const mfloat* x0, const mfloat* rhs, BiCG_struct* CG_space, mfloat* ou
 
         if (omega < 1e-10) {
             cout << "omega = 0 in BiCG" << endl;
+            return;
         }
         rho_old = rho;
         iter++;
     }
+
+    cout << "BiCG reaches maximum iteration number " << CG_space->max_iter << " error " << CG_space->error << endl;
 }
 
 
