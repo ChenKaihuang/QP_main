@@ -144,9 +144,17 @@ static PyObject* py_QP_solve(PyObject* self, PyObject* args) {
             return NULL;
         }
     }
+    PyObject* maxALMiter = PyDict_GetItemString(inputDict, "maxALMiter");
+    if (maxALMiter) {
+        if (!PyArg_Parse(maxALMiter, "i", &(para.max_ALM_iter))) {
+            return NULL;
+        }
+    }
 
-    sGSADMM_QP(Q, A, b, c, l, u, m, n, para);
-    return PyLong_FromLong(0);
+    output_parameters *para_out = new output_parameters;
+    QP_solve(Q, A, b, c, l, u, m, n, para, para_out);
+    PyObject *py_result = Py_BuildValue("idid", para_out->iter_ADMM, para_out->time_ADMM, para_out->iter_pALM, para_out->time_pALM);
+    return py_result;
 }
 
 static PyMethodDef QP_libraryMethods[] = {

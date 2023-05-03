@@ -6,6 +6,7 @@
 #include "algorithm.h"
 
 //#define USE_CBLAS 1
+#define SSN_debug 1
 
 using namespace std;
 
@@ -94,15 +95,33 @@ void proj_l2(const mfloat* input, mfloat weight, mfloat* output, int len, mfloat
     }
 }
 
-void proj(const mfloat* input, mfloat* output, int len, const mfloat* l, const mfloat* u) {
+void proj(const mfloat* input, mfloat* output, int len, const mfloat* l, const mfloat* u, bool* idx) {
+    if (!idx) {
 #pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(len, input, output, l ,u)
-    for (int i = 0; i < len; ++i) {
-        if (input[i] < l[i])
-            output[i] = l[i];
-        else if (input[i] > u[i])
-            output[i] = u[i];
-        else
-            output[i] = input[i];
+        for (int i = 0; i <= len; ++i) {
+            if (input[i] < l[i])
+                output[i] = l[i];
+            else if (input[i] >= u[i])
+                output[i] = u[i];
+            else
+                output[i] = input[i];
+        }
+    } else {
+#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(len, input, output, l ,u, idx)
+        for (int i = 0; i < len; ++i) {
+            if (input[i] <= l[i]) {
+                output[i] = l[i];
+                idx[i] = false;
+            }
+            else if (input[i] >= u[i]) {
+                output[i] = u[i];
+                idx[i] = false;
+            } else {
+                output[i] = input[i];
+                idx[i] = true;
+            }
+
+        }
     }
 }
 
@@ -145,11 +164,16 @@ mfloat norm2_mat(const mfloat* x, int m, int n) {
     return sqrt(res);
 }
 
-/// Todo:
 void axpy(const mfloat a, const mfloat* x, const mfloat* y, mfloat* z, const int len){
 #pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(len, y, z, a, x)
         for (int i = 0; i < len; ++i)
             z[i] = y[i] + a*x[i];
+}
+
+void axpby(const mfloat a, const mfloat* x, mfloat b, const mfloat* y, mfloat* z, const int len){
+#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(len, y, z, a, x, b)
+    for (int i = 0; i < len; ++i)
+        z[i] = b*y[i] + a*x[i];
 }
 
 void ax(mfloat a, const mfloat* x, mfloat* z, int len) {
@@ -503,6 +527,10 @@ void BiCG_test() {
     A.column[0] = 0; A.column[1] = 1; A.column[2] = 0; A.column[3] = 1;
     QP_space->A = A;
     QP_space->AT = get_BT(A);
+    QP_space->m = 2; QP_space->n = 2;
+    QP_space->Qx = new mfloat [2];
+    QP_space->ATy = new mfloat [2];
+//    sGSADMM_QP_init(QP_space);
     BiCG_space->dim_n = 2;
     BiCG_space->dim_m = 2;
     BiCG_init(BiCG_space);
@@ -518,7 +546,7 @@ void BiCG_test() {
     U_idx.number = 2;
     U_idx.vec = new int [2];
     U_idx.vec[0] = 0; U_idx.vec[1] = 1;
-    BiCG_space->U_idx = U_idx;
+    QP_space->U_idx = U_idx;
     BiCG(x0, rhs, output, BiCG_space, QP_space);
     cout << output[0] << ' ' << output[1] << ' ' << output[2] << ' ' << output[3] << endl;
 }
@@ -553,18 +581,23 @@ void simple_QP_test() {
 
     QP_space->l = new mfloat [2];
     QP_space->l[0] = -1e300; QP_space->l[1] = -1e300;
+//    QP_space->l[0] = 0; QP_space->l[1] = 0;
 
     QP_space->u = new mfloat [2];
     QP_space->u[0] = 1e300; QP_space->u[1] = 1e300;
+//    QP_space->u[0] = 1e300; QP_space->u[1] = 1e300;
 
     QP_space->m = 2; QP_space->n = 2;
 
     input_parameters para;
-    sGSADMM_QP(Q, A, QP_space->b, QP_space->c, QP_space->l, QP_space->u, QP_space->m, QP_space->n, para);
+    output_parameters *para_out;
+    para.max_ALM_iter = 10;
+    para.max_ADMM_iter = 61;
+    QP_solve(Q, A, QP_space->b, QP_space->c, QP_space->l, QP_space->u, QP_space->m, QP_space->n, para, para_out);
 }
 
 
-void sGSADMM_QP(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat* l, mfloat* u, int m, int n, input_parameters para) {
+void QP_solve(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat* l, mfloat* u, int m, int n, input_parameters para, output_parameters *para_out) {
     QP_struct *QP_space = new QP_struct;
     QP_space->Q = Q;
     QP_space->A = A;
@@ -577,7 +610,33 @@ void sGSADMM_QP(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mflo
     QP_space->input_para = para;
     sGSADMM_QP_init(QP_space);
 
-    while (QP_space->iter < QP_space->maxADMMiter) {
+    QP_space->time_solve_start = time_now();
+
+    QP_space->iter = 1;
+    if (QP_space->maxADMMiter > 0)
+        sGSADMM_QP(QP_space);
+
+    para_out->iter_ADMM = QP_space->iter;
+    para_out->time_ADMM = time_since(QP_space->time_solve_start);
+
+    QP_space->iter = 1;
+    for (int i = 0; i < n; ++i) {
+        QP_space->w_old[i] = QP_space->w[i];
+        QP_space->w0[i] = QP_space->w[i];
+    }
+    for (int i = 0; i < m; ++i) {
+        QP_space->y_old[i] = QP_space->y[i];
+        QP_space->y0[i] = QP_space->y[i];
+    }
+    if (QP_space->maxALMiter > 0)
+        pALM_SSN_QP(QP_space);
+
+    para_out->iter_pALM = QP_space->iter;
+    para_out->time_pALM = time_since(QP_space->time_solve_start) - para_out->time_ADMM;
+}
+
+void sGSADMM_QP(QP_struct *QP_space) {
+    while ((QP_space->iter < QP_space->maxADMMiter) && (!QP_space->sGSADMM_finish)) {
         sGSADMM_QP_update_y_first(QP_space);
         sGSADMM_QP_update_w_first(QP_space);
         sGSADMM_QP_update_z(QP_space);
@@ -585,12 +644,13 @@ void sGSADMM_QP(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mflo
         sGSADMM_QP_update_y_second(QP_space);
         sGSADMM_QP_update_x(QP_space);
 
-        sGSADMM_QP_compute_status(QP_space);
+        if ((QP_space->iter % sGSADMM_sigma_update_iter(QP_space->iter) == 0) || (QP_space->iter % sGSADMM_print_iter(QP_space->iter) == 0))
+            sGSADMM_QP_compute_status(QP_space);
+
         update_sigma(QP_space);
         sGSADMM_QP_print_status(QP_space);
         QP_space->iter++;
     }
-
 }
 
 void sGSADMM_QP_init(QP_struct *QP_space) {
@@ -602,11 +662,19 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
     QP_space->z = new mfloat [n];
     QP_space->z_new = new mfloat [n];
     QP_space->x = new mfloat [n];
+    QP_space->y_old = new mfloat [n];
+    QP_space->w_old = new mfloat [n];
+    QP_space->y0 = new mfloat [n];
+    QP_space->w0 = new mfloat [n];
     for (int i = 0; i < n; ++i) {
         QP_space->w[i] = 0; QP_space->z[i] = 0; QP_space->x[i] = 0;
+        QP_space->w_old[i] = 0;
+        QP_space->w0[i] = 0;
     }
     for (int i = 0; i < m; ++i) {
         QP_space->y[i] = 0;
+        QP_space->y_old[i] = 0;
+        QP_space->y0[i] = 0;
     }
     QP_space->gamma = 1.618;
     QP_space->sigma = 1.0;
@@ -622,18 +690,41 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
     QP_space->Rp = new mfloat [m];
     QP_space->z_Qw_c = new mfloat [n];
     QP_space->A_times_z_Qw_c = new mfloat [m];
+    QP_space->SSN_compute_obj_temp1 = new mfloat [n];
+    QP_space->Qz = new mfloat [n];
+    QP_space->SSN_grad = new mfloat [m+n];
+    QP_space->SSN_grad_Q = new mfloat [m+n];
+//    QP_space->Qw_old = new mfloat [n];
+    QP_space->Az = new mfloat [n];
     QP_space->dz = new mfloat [n];
-    QP_space->Qdz = new mfloat [n];
+    QP_space->Qz = new mfloat [n];
+    QP_space->dw = new mfloat [n];
+    QP_space->SSN_dwdy = new mfloat [m+n];
+    QP_space->Qdw = new mfloat [n];
     QP_space->update_w_rhs = new mfloat [n];
+    QP_space->proj_idx = new bool [n];
+    QP_space->U_idx.vec = new int [n];
     QP_space->z_ATy_c = new mfloat [n];
+    QP_space->Qw_ATy_c = new mfloat [n];
     QP_space->update_z_unProjected = new mfloat [n];
     QP_space->update_z_projected = new mfloat [n];
-    QP_space->iter = 0;
+    QP_space->pALM_z_unProjected = new mfloat [n];
+    QP_space->pALM_z_projected = new mfloat [n];
+    QP_space->normQ = norm2(QP_space->Q.value, QP_space->Q.rowStart[QP_space->Q.nRow]);
+    QP_space->iter = 1;
+    QP_space->kappa = 1; // [1e-4, 1e2] depends on problem.
+    QP_space->sGSADMM_tol = 1e-4;
+    QP_space->sGSADMM_finish = false;
 
     if (QP_space->input_para.max_ADMM_iter != -1)
         QP_space->maxADMMiter = QP_space->input_para.max_ADMM_iter;
     else
         QP_space->maxADMMiter = 1000;
+
+    if (QP_space->input_para.max_ALM_iter != -1)
+        QP_space->maxALMiter = QP_space->input_para.max_ALM_iter;
+    else
+        QP_space->maxALMiter = 1000;
 
     QP_space->AT = get_BT(QP_space->A);
 
@@ -764,8 +855,8 @@ void sGSADMM_QP_update_w_first(QP_struct *QP_space) {
 
 void sGSADMM_QP_update_w_second(QP_struct *QP_space) {
     mfloat *rhs = QP_space->update_w_rhs;
-    mfloat *z_ATy_c = QP_space->z_ATy_c;
-    int m = QP_space->m, n = QP_space->n;
+//    mfloat *z_ATy_c = QP_space->z_ATy_c;
+    int n = QP_space->n;
 
 //    spMV_R(QP_space->Q, QP_space->dz, n, n, QP_space->Qdz);
     axpy(1, QP_space->dz, rhs, rhs, n);
@@ -809,6 +900,7 @@ void sGSADMM_QP_update_x(QP_struct *QP_space) {
 
 void sGSADMM_QP_compute_status(QP_struct *QP_space) {
     int m = QP_space->m, n = QP_space->n;
+    spMV_R(QP_space->A, QP_space->x, m, n, QP_space->Ax);
     axpy(-1, QP_space->Ax, QP_space->b, QP_space->Rp, m);
     QP_space->inf_p = norm2(QP_space->Rp, m)/(1 + norm2(QP_space->b, m));
 
@@ -862,12 +954,46 @@ void sGSADMM_QP_refact_IQ(QP_struct* QP_space) {
 //    PARDISO_numerical_fact(QP_space->PDS_IQ);
 }
 
+int sGSADMM_print_iter(int iter) {
+    return 20;
+}
+
+int pALM_print_iter(int iter) {
+    return 1;
+}
+
+
 void sGSADMM_QP_print_status(QP_struct* QP_space) {
-    if (QP_space->iter == 0) {
-        printf("iter    inf_p      inf_d       inf_Q       inf_C       obj_p        obj_d       inf_g       sigma\n");
+    if (QP_space->iter == 1) {
+        printf("iter    inf_p      inf_d       inf_Q       inf_C       obj_p        obj_d       inf_g       sigma       time\n");
     }
-    if (QP_space->iter % 20 == 0) {
-        printf("%4d    %3.2e   %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2e\n", QP_space->iter, QP_space->inf_p, QP_space->inf_d, QP_space->inf_Q, QP_space->inf_C, QP_space->primal_obj, QP_space->dual_obj, QP_space->inf_g, QP_space->sigma);
+    std::vector<mfloat> inf;
+    mfloat time_solve_now = time_since(QP_space->time_solve_start);
+    if (QP_space->iter % sGSADMM_print_iter(QP_space->iter) == 0) {
+        printf("%4d    %3.2e   %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2f\n", QP_space->iter, QP_space->inf_p, QP_space->inf_d, QP_space->inf_Q, QP_space->inf_C, QP_space->primal_obj, QP_space->dual_obj, QP_space->inf_g, QP_space->sigma, time_solve_now);
+        inf = {QP_space->inf_p, QP_space->inf_d, QP_space->inf_Q, QP_space->inf_C, QP_space->inf_g};
+        if (*max_element(inf.begin(), inf.end()) < QP_space->sGSADMM_tol) {
+            QP_space->sGSADMM_finish = true;
+            cout << "sGSADMM error is " << *max_element(inf.begin(), inf.end()) << endl;
+        }
+
+    }
+}
+
+void pALM_QP_print_status(QP_struct* QP_space) {
+    if (QP_space->iter == 1) {
+        printf("iter    inf_p      inf_d       inf_Q       inf_C       obj_p        obj_d       inf_g       sigma       step       time\n");
+    }
+    std::vector<mfloat> inf;
+    mfloat time_solve_now = time_since(QP_space->time_solve_start);
+    if (QP_space->iter % pALM_print_iter(QP_space->iter) == 0) {
+        printf("%4d    %3.2e   %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2f\n", QP_space->iter, QP_space->inf_p, QP_space->inf_d, QP_space->inf_Q, QP_space->inf_C, QP_space->primal_obj, QP_space->dual_obj, QP_space->inf_g, QP_space->sigma, QP_space->step_size, time_solve_now);
+        inf = {QP_space->inf_p, QP_space->inf_d, QP_space->inf_Q, QP_space->inf_C, abs(QP_space->inf_g)};
+        if (*max_element(inf.begin(), inf.end()) < QP_space->pALM_tol) {
+            QP_space->pALM_finish = true;
+            cout << "pALM error is " << *max_element(inf.begin(), inf.end()) << endl;
+        }
+
     }
 }
 
@@ -935,7 +1061,7 @@ void PCG(const mfloat* x0, const mfloat* rhs, CG_struct* CG_space, mfloat* outpu
         precond_CG(CG_space);
         mfloat rsnew = xTy(r_pcg, z_pcg, n*d);
         mfloat B = rsnew/rsold;
-        int iNUM = n*d;
+//        int iNUM = n*d;
         axpy(B, p_pcg, z_pcg, p_pcg, n*d);
         rsold = rsnew;
 
@@ -952,22 +1078,220 @@ void PCG(const mfloat* x0, const mfloat* rhs, CG_struct* CG_space, mfloat* outpu
 //    return x_pcg;
 }
 
-void SSN_QP(QP_struct* QP_space) {
+void pALM_SSN_QP(QP_struct* QP_space) {
+    BiCG_struct *BiCG_space = new BiCG_struct;
+    mfloat findStep_LHS, findStep_RHS;
+    mfloat pow_delta;
+    int m = QP_space->m, n = QP_space->n;
+    BiCG_space->dim_m = m;
+    BiCG_space->dim_n = n;
+    mfloat eta = 0.1, v = 1, delta = 0.9, rho = 0.01;
+    int findStep_maxiter = 20, i;
+
+    BiCG_init(BiCG_space);
 
 
+    QP_space->iter = 1;
+
+    // pALM
+    sGSADMM_QP_compute_status(QP_space);
+    pALM_QP_print_status(QP_space);
+    while ((QP_space->iter < QP_space->maxALMiter) && (!QP_space->pALM_finish) ) {
+        QP_space->tau = max(1e-12, QP_space->kappa*pow(QP_space->iter, -2.5)) * QP_space->sigma;
+        // SSN
+
+        int SSNiter = 1;
+        mfloat normGrad;
+        SSN_findStep_update_variables(QP_space);
+        QP_space->SSN_tol = min(0.1, norm2(QP_space->b, m));
+        while (SSNiter < 15) {
+            // compute rhs of SSN
+            SSN_compute_grad(QP_space);
+            normGrad = norm2(QP_space->SSN_grad, m+n);
+//            cout << "normGrad = " << normGrad << endl;
+            if (normGrad < 1e-6) break;
+            BiCG_space->tol = min(eta, pow(norm2(QP_space->SSN_grad, m+n), 1+v));
+            BiCG_space->tol /= max(QP_space->normQ, 1.0);
+//            BiCG_space->tol = 1e-6;
+            BiCG(BiCG_space->x0, QP_space->SSN_grad, QP_space->SSN_dwdy, BiCG_space, QP_space);
+
+//            Taylor_test(BiCG_space, QP_space);
+
+            mfloat obj_old = SSN_obj_val(QP_space);
+//        SSN_compute_grad(QP_space);
+            mfloat temp_rhs = rho * xTy(QP_space->SSN_grad_Q, QP_space->SSN_dwdy, m+n);
+
+
+            for (i = 0; i < findStep_maxiter; ++i) {
+                pow_delta = pow(delta, i);
+                axpy(pow_delta, QP_space->SSN_dwdy, QP_space->w_old, QP_space->w, n);
+                axpy(pow_delta, QP_space->SSN_dwdy+n, QP_space->y_old, QP_space->y, m);
+                SSN_findStep_update_variables(QP_space);
+                findStep_LHS = SSN_obj_val(QP_space);
+                findStep_RHS = obj_old + pow_delta * temp_rhs;
+                if (findStep_LHS <= findStep_RHS) break;
+            }
+            QP_space->step_size = pow_delta;
+#ifdef SSN_debug
+            cout << "     step size " << pow_delta << " normGrad " << normGrad << endl;
+#endif
+            vMemcpy(QP_space->y, m, QP_space->y_old);
+            vMemcpy(QP_space->w, n, QP_space->w_old);
+
+//            if (i > 0)
+//                cout << "find step iteration " << i << endl;
+//            if (i == findStep_maxiter)
+//                cout << "find step reaches maximum iterations " << findStep_maxiter << endl;
+
+            SSNiter++;
+        }
+
+        vMemcpy(QP_space->y, m, QP_space->y0);
+        vMemcpy(QP_space->w, n, QP_space->w0);
+//        if ((QP_space->iter % sGSADMM_sigma_update_iter(QP_space->iter) == 0) || (QP_space->iter % sGSADMM_print_iter(QP_space->iter) == 0))
+        pALM_update_variables(QP_space);
+        sGSADMM_QP_compute_status(QP_space);
+        QP_space->SSN_tol = 0.1*QP_space->inf_p;
+        //        update_sigma(QP_space);
+        pALM_QP_print_status(QP_space);
+
+        QP_space->iter++;
+    }
+
+}
+
+void Taylor_test(BiCG_struct* BiCG_space, QP_struct* QP_space) {
+    int m = QP_space->m, n = QP_space->n;
+    mfloat *old_grad_Q = new mfloat [m+n];
+    mfloat *old_grad = new mfloat [m+n];
+    mfloat *old_w = new mfloat [n];
+    mfloat *old_y = new mfloat [m];
+    vMemcpy(QP_space->SSN_grad, m+n, old_grad);
+    vMemcpy(QP_space->SSN_grad_Q, m+n, old_grad_Q);
+    vMemcpy(QP_space->w, n, old_w);
+    vMemcpy(QP_space->y, n, old_y);
+
+    mfloat *dwdy = new mfloat [m+n];
+    for (int i = 0; i < m+n; ++i) {
+        dwdy[i] = (rand() % 100) / 100.0;
+    }
+
+    mfloat *temp_grad = new mfloat[m+n];
+    mfloat *mVdwdy = new mfloat[m+n];
+    mfloat *temp2 = new mfloat [m+n];
+
+    for (int i = 0; i < 4; ++i) {
+        SSN_findStep_update_variables(QP_space);
+        SSN_compute_grad(QP_space);
+
+        vMemcpy(QP_space->SSN_grad, m+n, temp_grad);
+
+        BiCG_prod(dwdy, mVdwdy, BiCG_space, QP_space);
+
+        axpy(1, dwdy, old_w, QP_space->w, n);
+        axpy(1, dwdy+n, old_y, QP_space->y, m);
+        SSN_findStep_update_variables(QP_space);
+        SSN_compute_grad(QP_space);
+
+        axpy(-1, temp_grad, QP_space->SSN_grad, temp2, m+n);
+
+
+//        cout << "w " << norm2(temp2, n) << endl;
+//
+//        cout << "y " << norm2(temp2+n, m) << endl;
+
+        axpy(1, mVdwdy, temp2, temp2, m+n);
+
+        cout << "w " << norm2(temp2, n)/norm2(dwdy, n) << endl;
+
+        cout << "y " << norm2(temp2+n, m)/norm2(dwdy+n, m) << endl;
+
+        vMemcpy(old_w, n, QP_space->w);
+        vMemcpy(old_y, m, QP_space->y);
+        vMemcpy(old_grad, m+n, QP_space->SSN_grad);
+        vMemcpy(old_grad_Q, m+n, QP_space->SSN_grad_Q);
+        for (int j = 0 ; j < m+n; ++j)
+            dwdy[j] /= 10;
+    }
+    SSN_findStep_update_variables(QP_space);
 
 
 }
 
+void SSN_findStep_update_variables(QP_struct* QP_space) {
+    int m = QP_space->m, n = QP_space->n;
+    spMV_R(QP_space->Q, QP_space->w, n, n, QP_space->Qw);
+    spMV_R(QP_space->AT, QP_space->y, n, m, QP_space->ATy);
+    axpy(-1, QP_space->ATy, QP_space->Qw, QP_space->Qw_ATy_c, n);
+    axpy(1, QP_space->c, QP_space->Qw_ATy_c, QP_space->Qw_ATy_c, n);
+
+    axpy(-QP_space->sigma, QP_space->Qw_ATy_c, QP_space->x, QP_space->pALM_z_unProjected, n);
+    proj(QP_space->pALM_z_unProjected, QP_space->pALM_z_projected, n, QP_space->l, QP_space->u, QP_space->proj_idx);
+
+    int nnz = 0;
+    int *p = QP_space->U_idx.vec;
+    for (int i = 0; i < n; ++i) {
+        if (QP_space->proj_idx[i]) {
+            p[nnz] = i;
+            nnz++;
+        }
+    }
+    QP_space->U_idx.number = nnz;
+}
+
+void pALM_update_variables(QP_struct* QP_space) {
+    int n = QP_space->n;
+    vMemcpy(QP_space->pALM_z_projected, n, QP_space->x);
+    axpy(-1, QP_space->pALM_z_unProjected, QP_space->pALM_z_projected, QP_space->z, n);
+    ax(1/QP_space->sigma, QP_space->z, QP_space->z, n);
+    update_sigma(QP_space);
+}
+
+mfloat SSN_obj_val(QP_struct* QP_space) {
+    mfloat res = 0;
+    int m = QP_space->m, n = QP_space->n;
+    res -= xTy(QP_space->Qw_ATy_c, QP_space->pALM_z_projected, n);
+
+    axpy(-1, QP_space->x, QP_space->pALM_z_projected, QP_space->SSN_compute_obj_temp1, n);
+    res -= 1/(2*QP_space->sigma)* xTy(QP_space->SSN_compute_obj_temp1, QP_space->SSN_compute_obj_temp1, n);
+    res += 1.0/2*xTy(QP_space->w, QP_space->Qw, n);
+    res -= xTy(QP_space->b, QP_space->y, m);
+
+    axpy(-1, QP_space->w0, QP_space->w, QP_space->dw, n);
+    spMV_R(QP_space->Q, QP_space->dw, n, n, QP_space->Qdw);
+    res += QP_space->tau/(2*QP_space->sigma) * (xTy(QP_space->dw, QP_space->Qdw, n) + pow(distance(QP_space->y, QP_space->y0, m), 2));
+
+    return res;
+}
+
+void SSN_compute_grad(QP_struct* QP_space) {
+    int m = QP_space->m, n = QP_space->n;
+    mfloat tau = QP_space->tau, sigma = QP_space->sigma;
+    axpby(-1, QP_space->pALM_z_projected, 1+tau/sigma, QP_space->w, QP_space->SSN_grad, n);
+    axpy(-tau/sigma, QP_space->w0, QP_space->SSN_grad, QP_space->SSN_grad, n);
+    spMV_R(QP_space->Q, QP_space->SSN_grad, n, n, QP_space->SSN_grad_Q);
+
+
+    spMV_R(QP_space->A, QP_space->pALM_z_projected, m, n, QP_space->Az);
+    axpy(-1, QP_space->b, QP_space->Az, QP_space->SSN_grad+n, m);
+    axpy(tau/sigma, QP_space->y, QP_space->SSN_grad+n, QP_space->SSN_grad+n, m);
+    axpy(-tau/sigma, QP_space->y0, QP_space->SSN_grad+n, QP_space->SSN_grad+n, m);
+    vMemcpy(QP_space->SSN_grad+n, m, QP_space->SSN_grad_Q+n);
+//    ax(-1, QP_space->SSN_grad, QP_space->SSN_grad,)
+}
+
 void BiCG_prod(const mfloat *x, mfloat* output, BiCG_struct *BiCG_space, QP_struct *QP_space) {
+    // minus linear system, Ax = -b -> -Ax = b
 //    spMV_R(BiCG_space->A, x, BiCG_space->A.nRow, BiCG_space->A.nCol, output);
     int n = BiCG_space->dim_n, m = BiCG_space->dim_m;
     mfloat *output1 = output, *output2 = output + n;
     const mfloat *x1 = x;
     const mfloat *x2 = x + n;
-    spVec_int U_idx = BiCG_space->U_idx;
+    spVec_int U_idx = QP_space->U_idx;
     mfloat *temp1 = BiCG_space->BiCG_prod_temp1;
     mfloat *temp2 = BiCG_space->BiCG_prod_temp2;
+    mfloat *Qx = BiCG_space->Qx;
+    mfloat *ATy = BiCG_space->ATy;
     mfloat tau = QP_space->tau, sigma = QP_space->sigma;
     sparseRowMatrix Q = QP_space->Q, AT = QP_space->AT;
 
@@ -980,24 +1304,26 @@ void BiCG_prod(const mfloat *x, mfloat* output, BiCG_struct *BiCG_space, QP_stru
         output2[i] = 0;
     }
 
-    partial_spMV_R(Q, x1, U_idx.number, n, temp1, U_idx);
-    axpy(1+tau/sigma, x1, temp1, temp1, n);
-    partial_spMV_R(AT, x2, U_idx.number, m, output1, U_idx);
-    axpy(-1, output1, temp1, output1, n);
+    partial_spMV_R(Q, x1, U_idx.number, n, Qx, U_idx);
+    axpby(-1-tau/sigma, x1, -sigma, Qx, temp1, n);
+    partial_spMV_R(AT, x2, U_idx.number, m, ATy, U_idx);
+    axpy(sigma, ATy, temp1, output1, n);
 
-    partial_spMV_R(Q, x1, U_idx.number, n, temp2, U_idx);
+//    partial_spMV_R(Q, x1, U_idx.number, n, temp2, U_idx);
 //    axpy(1+tau/sigma, x1, temp1, temp1, n);
-    partial_spMV_2(AT, temp2, n, m, output2, U_idx);
+    partial_spMV_2(AT, Qx, n, m, temp1, U_idx);
 
-    partial_spMV_R(AT, x2, U_idx.number, m, temp2, U_idx);
-    partial_spMV_2(AT, temp2, n, m, temp1, U_idx);
-    axpy(tau/sigma, x2, temp1, temp1, m);
-    axpy(-1, output2, temp1, output2, m);
+//    partial_spMV_R(AT, x2, U_idx.number, m, temp1, U_idx);
+    partial_spMV_2(AT, ATy, n, m, output2, U_idx);
+    axpby(-tau/sigma, x2, -sigma, output2, output2, m);
+    axpy(sigma, temp1, output2, output2, m);
 }
 
 void BiCG_init(BiCG_struct* CG_space) {
     int n = CG_space->dim_n + CG_space->dim_m;
     CG_space->x = new mfloat [n];
+    CG_space->Qx = new mfloat [CG_space->dim_n];
+    CG_space->ATy = new mfloat [CG_space->dim_n];
     CG_space->r = new mfloat [n];
     CG_space->r0 = new mfloat [n];
     CG_space->p_hat = new mfloat [n];
@@ -1009,6 +1335,8 @@ void BiCG_init(BiCG_struct* CG_space) {
     CG_space->v = new mfloat [n];
     CG_space->BiCG_prod_temp1 = new mfloat [CG_space->dim_n];
     CG_space->BiCG_prod_temp2 = new mfloat [CG_space->dim_n];
+    CG_space->x0 = new mfloat [n];
+    for (int i = 0; i < n; ++i) CG_space->x0[i] = 0;
 }
 
 void precond_BiCG(const mfloat* input, mfloat* output, BiCG_struct* CG_space) {
@@ -1023,13 +1351,15 @@ void BiCG(const mfloat* x0, const mfloat* rhs, mfloat* output, BiCG_struct* CG_s
     mfloat *s_hat = CG_space->s_hat, *t = CG_space->t;
     double *p = CG_space->p, *Ap = CG_space->Ap, *v = CG_space->v;
     mfloat rho_old = 1, alpha = 1, omega = 1;
-    mfloat bnorm = norm2(rhs, n)+1;
+//    mfloat bnorm = norm2(rhs, n)+1;
+    mfloat bnorm = 1;
 //    for (int i = 0; i < n; ++i) {
 //        v[i] = 0;
 //        p[i] = 0;
 //    }
+    vMemcpy(x0, n, x);
     BiCG_prod(x0, Ap, CG_space, QP_space);
-    cout << Ap[0] << ' ' << Ap[1] << ' ' << Ap[2] << ' ' << Ap[3] << endl;
+//    cout << Ap[0] << ' ' << Ap[1] << ' ' << Ap[2] << ' ' << Ap[3] << endl;
     axpy(-1, Ap, rhs, r, n);
     vMemcpy(r, n, r0);
 
@@ -1045,7 +1375,7 @@ void BiCG(const mfloat* x0, const mfloat* rhs, mfloat* output, BiCG_struct* CG_s
     }
     while (iter < CG_space->max_iter) {
         rho = xTy(r, r0, n);
-        if (rho < 1e-10) {
+        if (abs(rho) == 0) {
             cout << "BiCG error: rho = 0" << endl;
             return;
         }
@@ -1086,7 +1416,7 @@ void BiCG(const mfloat* x0, const mfloat* rhs, mfloat* output, BiCG_struct* CG_s
             return;
         }
 
-        if (omega < 1e-10) {
+        if (abs(omega) == 0) {
             cout << "omega = 0 in BiCG" << endl;
             return;
         }
@@ -1223,14 +1553,7 @@ void find_step(int stepopt) {
 //bool check_termination_SSN(int iter) {
 //}
 
-
-void update_sigma(QP_struct *QP_space) {
-//    if (primfeas < dualfeas)
-//        primWin++;
-//    else
-//        dualWin++;
-
-    int iter = QP_space->iter;
+int sGSADMM_sigma_update_iter(int iter) {
     int sigma_update_iter = 2;
     if (iter < 10)
         sigma_update_iter = 2;
@@ -1241,10 +1564,21 @@ void update_sigma(QP_struct *QP_space) {
     else if (iter < 500)
         sigma_update_iter = 10;
 
+    return sigma_update_iter;
+}
+
+void update_sigma(QP_struct *QP_space) {
+//    if (primfeas < dualfeas)
+//        primWin++;
+//    else
+//        dualWin++;
+
+    int iter = QP_space->iter;
+
 //    mfloat factor = 5.0;
     mfloat inf_primal = max(QP_space->inf_p, max(QP_space->inf_Q, QP_space->inf_C));
     QP_space->sigma_old = QP_space->sigma;
-    if (iter % sigma_update_iter == 0) {
+    if (iter % sGSADMM_sigma_update_iter(iter) == 0) {
         if (inf_primal < 0.75*QP_space->inf_d) {
             QP_space->sigma *= 1.25;
         }

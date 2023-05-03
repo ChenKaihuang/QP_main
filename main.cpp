@@ -18,8 +18,9 @@ using namespace std;
 
 int main( void )
 {
-//    simple_QP_test();
-    BiCG_test();
+    simple_QP_test();
+
+//    BiCG_test();
 //    putenv("OMP_NUM_THREADS=1");
 //    /* Matrix data. */
 //    int    n = 8;

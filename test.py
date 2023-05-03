@@ -11,5 +11,7 @@ c = [1,0,1]
 l = [-1e300, -1, -1]
 u = [1e300, 1, 1]
 para = {}
-para['maxADMMiter'] = 1000
-QP_library.QP_solve(Q_value,Q_rowstart,Q_column,A_value,A_rowstart,A_column,b,c,l,u,para)
+para['maxADMMiter'] = 100
+para['maxALMiter'] = 80
+py_result = QP_library.QP_solve(Q_value,Q_rowstart,Q_column,A_value,A_rowstart,A_column,b,c,l,u,para)
+print(py_result)

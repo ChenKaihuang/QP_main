@@ -59,12 +59,12 @@ typedef struct {
 } sparseRowMatrix;
 
 typedef struct BiCG_struct{
-    mfloat *x,*r,*p,*Ap, *v, *r0, *p_hat, *s, *s_hat, *t;
+    mfloat *x,*r,*p,*Ap, *v, *r0, *p_hat, *s, *s_hat, *t, *x0, *Qx, *ATy;
     int dim_n, max_iter = 100, nCGs, dim_m;
     mfloat tol = 1e-6, cgTime, error;
     linearSolver LLT;
-    spVec_int U_idx;
     mfloat *BiCG_prod_temp1, *BiCG_prod_temp2;
+
 } BiCG_struct;
 
 typedef struct {
@@ -89,9 +89,19 @@ typedef struct {
 
 typedef struct input_parameters {
     int max_ADMM_iter = -1;
+    int max_ALM_iter = -1;
 } input_parameters;
 
-typedef struct {
+typedef struct output_parameters {
+    int iter_ADMM;
+    int iter_pALM;
+    mfloat primal_obj;
+    mfloat dual_obj;
+    mfloat time_ADMM;
+    mfloat time_pALM;
+} output_parameters;
+
+typedef struct QP_struct {
     // input: 1/2 xQx + cx, s.t. Ax = b x \in C = [l, u]
     // quadratic matrix Q and constraint matrix A;
     sparseRowMatrix Q, A;
@@ -103,24 +113,39 @@ typedef struct {
     sparseRowMatrix AT, AAT, IQ;
     mfloat *w, *y, *z, *x, sigma, gamma, sigma_old, tau;
     PARDISO_var *PDS_IQ, *PDS_A;
-    mfloat *update_y_rhs, *Qw, *ATy, *Ax, *Rd, *Rp, *z_Qw_c, *A_times_z_Qw_c, *dz, *Qx, *Qdz;
-    mfloat *z_new;
+    mfloat *update_y_rhs, *Qw, *ATy, *Ax, *Rd, *Rp, *z_Qw_c, *A_times_z_Qw_c, *dz, *Qx, *Qz, *Az;
+    mfloat *z_new, *y_old, *Qw_ATy_c;
     mfloat *w_bar, *y_bar;
     mfloat *update_w_rhs, *z_ATy_c;
     mfloat *update_z_unProjected, *update_z_projected;
+    mfloat *pALM_z_unProjected, *pALM_z_projected;
     mfloat inf_p, inf_d, inf_Q, inf_C, inf_g, primal_obj, dual_obj, infty_z;
     mfloat *RQ, *RC;
+    mfloat *dw, *w_old, *Qdw;
+    mfloat *w0, *y0;
+    mfloat normQ, kappa, SSN_tol;
+    mfloat *SSN_grad_Q, *SSN_compute_obj_temp1, *SSN_grad, *SSN_dwdy;
+    mfloat sGSADMM_tol, pALM_tol = 1e-6;
+    bool sGSADMM_finish;
+    bool pALM_finish = false;
+
     input_parameters input_para;
     Eigen::SparseMatrix<mfloat> EigenI, EigenQ, EigenIQ;
     Eigen::SparseMatrix<mfloat> upperMatQ;
     linearSolver Eigen_linear_AAT, Eigen_linear_IQ;
-    int iter, maxADMMiter;
+    int iter, maxADMMiter, maxALMiter;
     Eigen::VectorX<mfloat> Eigen_rhs_w, Eigen_rhs_y, Eigen_result_w, Eigen_result_y;
+    bool *proj_idx;
+    spVec_int U_idx;
+    std::chrono::steady_clock::time_point time_solve_start;
+    mfloat step_size;
 } QP_struct;
 
 void Eigen_init(QP_struct *QP_space);
 
-void sGSADMM_QP(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat* l, mfloat* u, int m, int n, input_parameters para);
+void QP_solve(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat* l, mfloat* u, int m, int n, input_parameters para, output_parameters *para_out);
+
+void sGSADMM_QP(QP_struct *QP_space);
 
 void sGSADMM_QP_init(QP_struct *QP_space);
 
@@ -144,7 +169,27 @@ void sGSADMM_QP_print_status(QP_struct* QP_space);
 
 void sGSADMM_QP_refact_IQ(QP_struct* QP_space);
 
-void SSN_QP(QP_struct* QP_space);
+int sGSADMM_sigma_update_iter(int iter);
+
+int sGSADMM_print_iter(int iter);
+
+void pALM_QP_print_status(QP_struct* QP_space);
+
+int pALM_print_iter(int iter);
+
+void pALM_SSN_QP(QP_struct* QP_space);
+
+void SSN_findStep(QP_struct* QP_space);
+
+mfloat SSN_obj_val(QP_struct* QP_space);
+
+void SSN_compute_grad(QP_struct* QP_space);
+
+void SSN_findStep_update_variables(QP_struct* QP_space);
+
+void pALM_update_variables(QP_struct* QP_space);
+
+void Taylor_test(BiCG_struct* BiCG_space, QP_struct* QP_space);
 
 /// support function of -x
 mfloat support_function(const mfloat* x, const mfloat* l, const mfloat* u, int len, mfloat* infty_x);
@@ -157,7 +202,7 @@ void write_bin(const char *lpFileName, mfloat* X, int len);
 void proj_l2(const mfloat* input, mfloat weight, mfloat* output, int len, mfloat& norm_input, bool& rr);
 
 /// projection on to an interval. (proximal mapping of indicate function)
-void proj(const mfloat* input, mfloat* output, int len, const mfloat* l, const mfloat* u);
+void proj(const mfloat* input, mfloat* output, int len, const mfloat* l, const mfloat* u, bool *idx = nullptr);
 
 /// weighted l2 norm, column wise for matrix input (m-by-n). Matrix is stored in column order for (one column's) continuous memory.
 void proj_l2_mat(const mfloat* input, const mfloat* weight, mfloat* output, int m, int n, mfloat* norm_input, bool* rr, bool byRow = true);
@@ -172,6 +217,10 @@ mfloat norm2_mat(const mfloat* x, int m, int n);
 
 /// z = y + a*x. a can be 1 and -1. z is output. z can be y.
 void axpy(mfloat a, const mfloat* x, const mfloat* y, mfloat* z, int len);
+
+/// z = b*y + a*x. a can be 1 and -1. z is output. z can be y.
+void axpby(mfloat a, const mfloat* x, mfloat b, const mfloat* y, mfloat* z, int len);
+
 /// z = a*x. a can be 1 and -1. z is output. z can be x.
 void ax(mfloat a, const mfloat* x, mfloat* z, int len);
 /// z = y + a*x'. a can be 1 and -1. z is output. z can be y.
