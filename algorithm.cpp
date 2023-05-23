@@ -597,6 +597,30 @@ void simple_QP_test() {
 }
 
 
+void simple_ruiz_test() {
+    sparseRowMatrix A;
+    A.value = new mfloat [4];
+    A.nRow = 2; A.nCol = 2;
+    A.value[0] = 1; A.value[1] = 1; A.value[2] = 2; A.value[3] = -1;
+    A.rowStart = new int [3];
+    A.rowStart[0] = 0; A.rowStart[1] = 2; A.rowStart[2] = 4;
+    A.column = new int [4];
+    A.column[0] = 0; A.column[1] = 1; A.column[2] = 0; A.column[3] = 1;
+
+    sparseRowMatrix AT = get_BT(A);
+
+    sparseRowMatrix *A_new = new sparseRowMatrix;
+    sparseRowMatrix *AT_new = new sparseRowMatrix;
+
+    mfloat *D = new mfloat [2];
+    mfloat *E = new mfloat [2];
+    ruiz_equilibration(A, A_new, AT, AT_new, D, E);
+
+    print_spM(*A_new);
+    cout << D[0] << ' ' << D[1] << endl;
+    cout << E[0] << ' ' << E[1] << endl;
+}
+
 void QP_solve(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat* l, mfloat* u, int m, int n, input_parameters para, output_parameters *para_out) {
     QP_struct *QP_space = new QP_struct;
     QP_space->Q = Q;
@@ -1634,6 +1658,99 @@ void precond_CG(CG_struct* CG_space) {
     }
 }
 
+void ruiz_equilibration(sparseRowMatrix A, sparseRowMatrix *A_new, sparseRowMatrix AT, sparseRowMatrix *AT_new, mfloat *D, mfloat *E) {
+    int m = A.nRow;
+    int n = A.nCol;
+    A_new->nRow = m; A_new->nCol = n;
+    A_new->rowStart = new int[m+1];
+    vMemcpy(A.rowStart, m+1, A_new->rowStart);
+    A_new->column = new int[A.rowStart[m]];
+    vMemcpy(A.column, A.rowStart[m], A_new->column);
+    A_new->value = new mfloat[A.rowStart[m]];
+    vMemcpy(A.value, A.rowStart[m], A_new->value);
+
+    AT_new->nRow = n; AT_new->nCol = m;
+    AT_new->rowStart = new int[n+1];
+    vMemcpy(AT.rowStart, n+1, AT_new->rowStart);
+    AT_new->column = new int[AT.rowStart[n]];
+    vMemcpy(AT.column, AT.rowStart[n], AT_new->column);
+    AT_new->value = new mfloat[AT.rowStart[n]];
+    vMemcpy(AT.value, AT.rowStart[n], AT_new->value);
+
+    for (int i = 0; i < m; ++i)
+        E[i] = 1.0;
+    for (int i = 0; i < n; ++i)
+        D[i] = 1.0;
+
+    mfloat *E_temp = new mfloat[m];
+    mfloat *D_temp = new mfloat[n];
+
+    int max_iter = 10;
+    mfloat tol = 1e-6;
+
+    for (int i = 0; i < max_iter; ++i) {
+        for (int r = 0; r < m; ++r) {
+            mfloat temp_value = 0.0;
+            for (int j = A_new->rowStart[r]; j < A_new->rowStart[r+1]; ++j) {
+                if (abs(A_new->value[j]) > temp_value )
+                    temp_value = abs(A_new->value[j]);
+            }
+            temp_value = sqrt(temp_value);
+            if (temp_value < 1e-2)
+                temp_value = 1e-2;
+            if (temp_value > 1e2)
+                temp_value = 1e2;
+
+            E_temp[r] = temp_value;
+        }
+
+        for (int c = 0; c < n; ++c) {
+            mfloat temp_value = 0.0;
+            for (int j = AT_new->rowStart[c]; j < AT_new->rowStart[c+1]; ++j) {
+                if (abs(AT_new->value[j]) > temp_value )
+                    temp_value = abs(AT_new->value[j]);
+            }
+            temp_value = sqrt(temp_value);
+            if (temp_value < 1e-2)
+                temp_value = 1e-2;
+            if (temp_value > 1e2)
+                temp_value = 1e2;
+
+            D_temp[c] = temp_value;
+        }
+
+        for (int r = 0; r < m; ++r) {
+            for (int j = A_new->rowStart[r]; j < A_new->rowStart[r+1]; ++j) {
+                A_new->value[j] /= E_temp[r];
+                A_new->value[j] /= D_temp[A_new->column[j]];
+            }
+        }
+
+        for (int c = 0; c < n; ++c) {
+            for (int j = AT_new->rowStart[c]; j < AT_new->rowStart[c+1]; ++j) {
+                AT_new->value[j] /= D_temp[c];
+                AT_new->value[j] /= E_temp[AT_new->column[j]];
+            }
+        }
+
+//        print_spM(*A_new);
+
+        for (int r = 0; r < m; ++r)
+            E[r] /= E_temp[r];
+        for (int c = 0; c < n; ++c)
+            D[c] /= D_temp[c];
+
+        mfloat norm1 = 0.0, norm2 = 0.0;
+        for (int r = 0; r < m; ++r)
+            norm1 += pow(1-E_temp[r]*E_temp[r], 2);
+        for (int c = 0; c < n; ++c)
+            norm2 += pow(1-D_temp[c]*D_temp[c], 2);
+        mfloat error = max(sqrt(norm1), sqrt(norm2));
+        if (error < tol)
+            break;
+    }
+}
+
 void initial_Eigen() {
 //    In.resize(Ainput.B.nRow, Ainput.B.nRow);
 //    In.setIdentity();
@@ -1667,6 +1784,7 @@ void Eigen_init(QP_struct *QP_space) {
     Eigen::SparseMatrix<mfloat> EigenAT = get_eigen_spMat(QP_space->AT);
     Eigen::SparseMatrix<mfloat> EigenAAT = EigenA*EigenA.transpose();
 
+//    QP_space->EigenA = EigenA;
     QP_space->Eigen_rhs_w.resize(QP_space->n, 1);
     QP_space->Eigen_result_w.resize(QP_space->n, 1);
     QP_space->Eigen_rhs_y.resize(QP_space->m, 1);

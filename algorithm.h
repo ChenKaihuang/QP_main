@@ -60,7 +60,7 @@ typedef struct {
 
 typedef struct BiCG_struct{
     mfloat *x,*r,*p,*Ap, *v, *r0, *p_hat, *s, *s_hat, *t, *x0, *Qx, *ATy;
-    int dim_n, max_iter = 100, nCGs, dim_m;
+    int dim_n, max_iter = 500, nCGs, dim_m;
     mfloat tol = 1e-6, cgTime, error;
     linearSolver LLT;
     mfloat *BiCG_prod_temp1, *BiCG_prod_temp2;
@@ -139,9 +139,12 @@ typedef struct QP_struct {
     spVec_int U_idx;
     std::chrono::steady_clock::time_point time_solve_start;
     mfloat step_size;
+//    Eigen::SparseMatrix<mfloat> EigenA;
 } QP_struct;
 
 void Eigen_init(QP_struct *QP_space);
+
+void simple_ruiz_test();
 
 void QP_solve(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat* l, mfloat* u, int m, int n, input_parameters para, output_parameters *para_out);
 
@@ -311,6 +314,9 @@ void create_My_CG();
 
 /// Compute M*y for CG
 void My_CG();
+
+/// Perform Ruiz equilibration for scaling a m by n matrix
+void ruiz_equilibration(sparseRowMatrix A, sparseRowMatrix *A_new, sparseRowMatrix AT, sparseRowMatrix *AT_new, mfloat *D, mfloat *E);
 
 /// Compute Ax for BiCG
 void BiCG_prod(const mfloat *x, mfloat* output, BiCG_struct *BiCG_space, QP_struct *QP_space);
