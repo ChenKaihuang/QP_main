@@ -151,6 +151,13 @@ static PyObject* py_QP_solve(PyObject* self, PyObject* args) {
         }
     }
 
+    PyObject* sigma = PyDict_GetItemString(inputDict, "sigma");
+    if (sigma) {
+        if (!PyArg_Parse(sigma, "d", &(para.sigma))) {
+            return NULL;
+        }
+    }
+
     output_parameters *para_out = new output_parameters;
     QP_solve(Q, A, b, c, l, u, m, n, para, para_out);
     PyObject *py_result = Py_BuildValue("idid", para_out->iter_ADMM, para_out->time_ADMM, para_out->iter_pALM, para_out->time_pALM);

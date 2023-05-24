@@ -1,0 +1,4 @@
+# ninja log v5
+0	1049	1684920066353657663	CMakeFiles/QP_library.dir/QP_wrapper.cpp.o	84b57b0bb007b71e
+0	3823	1684920069125684626	CMakeFiles/QP_library.dir/algorithm.cpp.o	491911fb0cd65826
+3823	3885	1684920069185685210	/home/chenkaihuang/programming/QP-main/libQP_library.so	10418f73c30d0a72

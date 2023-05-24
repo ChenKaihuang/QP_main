@@ -229,12 +229,16 @@ void axpy_R(const mfloat* a, const mfloat* x, const mfloat* yf, mfloat* zf, int 
 
 }
 
-mfloat* xdoty(const mfloat* x, const mfloat* yf, int len) {
-    mfloat* zf = new mfloat [len];
-#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(len,zf,x,yf)
-    for (int i = 0; i < len; ++i)
-        zf[i] = x[i] * yf[i];
-    return zf;
+void xdoty(const mfloat* x, const mfloat* y, mfloat* z, int len, bool prod) {
+    if (prod) {
+#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(len,z,x,y)
+        for (int i = 0; i < len; ++i)
+            z[i] = x[i] * y[i];
+    } else {
+#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(len,z,x,y)
+        for (int i = 0; i < len; ++i)
+            z[i] = x[i] / y[i];
+    }
 }
 
 mfloat* xdoty_mat(const mfloat* x, const mfloat* yf, int m, int n) {
@@ -614,9 +618,9 @@ void simple_ruiz_test() {
 
     mfloat *D = new mfloat [2];
     mfloat *E = new mfloat [2];
-    ruiz_equilibration(A, A_new, AT, AT_new, D, E);
+    ruiz_equilibration(A, &A, AT, &AT, D, E);
 
-    print_spM(*A_new);
+    print_spM(A);
     cout << D[0] << ' ' << D[1] << endl;
     cout << E[0] << ' ' << E[1] << endl;
 }
@@ -632,6 +636,8 @@ void QP_solve(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat
     QP_space->m = m;
     QP_space->n = n;
     QP_space->input_para = para;
+
+    preprocessing(QP_space);
     sGSADMM_QP_init(QP_space);
 
     QP_space->time_solve_start = time_now();
@@ -701,7 +707,7 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
         QP_space->y0[i] = 0;
     }
     QP_space->gamma = 1.618;
-    QP_space->sigma = 1.0;
+//    QP_space->sigma = 1.0;
     QP_space->update_y_rhs = new mfloat [m];
     QP_space->Qw = new mfloat [n];
     QP_space->Qx = new mfloat [n];
@@ -750,7 +756,8 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
     else
         QP_space->maxALMiter = 1000;
 
-    QP_space->AT = get_BT(QP_space->A);
+    if (QP_space->input_para.sigma > 0)
+        QP_space->sigma = QP_space->input_para.sigma;
 
     Eigen_init(QP_space);
 //    Eigen::SparseMatrix<mfloat> EigenA = get_eigen_spMat(QP_space->A);
@@ -1006,12 +1013,12 @@ void sGSADMM_QP_print_status(QP_struct* QP_space) {
 
 void pALM_QP_print_status(QP_struct* QP_space) {
     if (QP_space->iter == 1) {
-        printf("iter    inf_p      inf_d       inf_Q       inf_C       obj_p        obj_d       inf_g       sigma       step       time\n");
+        printf("iter    inf_p      inf_d       inf_Q       inf_C       obj_p        obj_d       inf_g       sigma       tau      step       time\n");
     }
     std::vector<mfloat> inf;
     mfloat time_solve_now = time_since(QP_space->time_solve_start);
     if (QP_space->iter % pALM_print_iter(QP_space->iter) == 0) {
-        printf("%4d    %3.2e   %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2f\n", QP_space->iter, QP_space->inf_p, QP_space->inf_d, QP_space->inf_Q, QP_space->inf_C, QP_space->primal_obj, QP_space->dual_obj, QP_space->inf_g, QP_space->sigma, QP_space->step_size, time_solve_now);
+        printf("%4d    %3.2e   %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2f\n", QP_space->iter, QP_space->inf_p, QP_space->inf_d, QP_space->inf_Q, QP_space->inf_C, QP_space->primal_obj, QP_space->dual_obj, QP_space->inf_g, QP_space->sigma, QP_space->tau, QP_space->step_size, time_solve_now);
         inf = {QP_space->inf_p, QP_space->inf_d, QP_space->inf_Q, QP_space->inf_C, abs(QP_space->inf_g)};
         if (*max_element(inf.begin(), inf.end()) < QP_space->pALM_tol) {
             QP_space->pALM_finish = true;
@@ -1268,7 +1275,7 @@ void pALM_update_variables(QP_struct* QP_space) {
     vMemcpy(QP_space->pALM_z_projected, n, QP_space->x);
     axpy(-1, QP_space->pALM_z_unProjected, QP_space->pALM_z_projected, QP_space->z, n);
     ax(1/QP_space->sigma, QP_space->z, QP_space->z, n);
-    update_sigma(QP_space);
+    update_sigma_pALM(QP_space);
 }
 
 mfloat SSN_obj_val(QP_struct* QP_space) {
@@ -1578,7 +1585,7 @@ void find_step(int stepopt) {
 //}
 
 int sGSADMM_sigma_update_iter(int iter) {
-    int sigma_update_iter = 2;
+    int sigma_update_iter = 25;
     if (iter < 10)
         sigma_update_iter = 2;
     else if (iter < 20)
@@ -1617,6 +1624,24 @@ void update_sigma(QP_struct *QP_space) {
         sGSADMM_QP_refact_IQ(QP_space);
     }
 
+}
+
+void update_sigma_pALM(QP_struct* QP_space) {
+    int iter = QP_space->iter;
+
+    mfloat inf_primal = max(QP_space->inf_p, max(QP_space->inf_Q, QP_space->inf_C));
+    QP_space->sigma_old = QP_space->sigma;
+    if (iter % 1 == 0) {
+        if (inf_primal < 0.75*QP_space->inf_d) {
+            QP_space->sigma *= 1.25;
+        }
+        else if (inf_primal > 1.33*QP_space->inf_d) {
+            QP_space->sigma *= 0.8;
+        }
+
+        QP_space->sigma = min(QP_space->sigma, 1e5);
+        QP_space->sigma = max(QP_space->sigma, 1e-10);
+    }
 }
 
 void print_spM(sparseRowMatrix input) {
@@ -1658,24 +1683,73 @@ void precond_CG(CG_struct* CG_space) {
     }
 }
 
+void preprocessing(QP_struct *qp) {
+    qp->AT = get_BT(qp->A);
+    qp->Lorg = new mfloat[qp->n];
+    qp->Uorg = new mfloat[qp->n];
+    vMemcpy(qp->l, qp->n, qp->Lorg);
+    vMemcpy(qp->u, qp->n, qp->Uorg);
+
+    qp->normborg = norm2(qp->b, qp->m);
+    qp->normcorg = norm2(qp->c, qp->n);
+
+    qp->cA = new mfloat[qp->n];
+    qp->rA = new mfloat[qp->m];
+    ruiz_equilibration(qp->A, &qp->A, qp->AT, &qp->AT, qp->cA, qp->rA);
+    xdoty(qp->b, qp->rA, qp->b, qp->m, true);
+    xdoty(qp->c, qp->cA, qp->c, qp->n, true);
+    xdoty(qp->l, qp->cA, qp->l, qp->n, false);
+    xdoty(qp->u, qp->cA, qp->u, qp->n, false);
+
+    for (int r = 0; r < qp->n; ++r) {
+        for (int j = qp->Q.rowStart[r]; j < qp->Q.rowStart[r+1]; ++j) {
+            qp->Q.value[j] *= qp->cA[r];
+            qp->Q.value[j] *= qp->cA[qp->Q.column[j]];
+        }
+    }
+
+    mfloat bscale = max(1.0, qp->normborg);
+    mfloat cscale = max(1.0, qp->normcorg);
+    mfloat invbscale = 1/max(1.0, qp->normborg);
+    mfloat invcscale = 1/max(1.0, qp->normcorg);
+
+    ax(invbscale, qp->b, qp->b, qp->m);
+    ax(invcscale, qp->c, qp->c, qp->n);
+    ax(invbscale, qp->l, qp->l, qp->n);
+    ax(invbscale, qp->u, qp->u, qp->n);
+
+    mfloat bcratio = bscale / cscale;
+    for (int r = 0; r < qp->n; ++r) {
+        for (int j = qp->Q.rowStart[r]; j < qp->Q.rowStart[r+1]; ++j) {
+            qp->Q.value[j] *= bcratio;
+        }
+    }
+}
+
+
 void ruiz_equilibration(sparseRowMatrix A, sparseRowMatrix *A_new, sparseRowMatrix AT, sparseRowMatrix *AT_new, mfloat *D, mfloat *E) {
     int m = A.nRow;
     int n = A.nCol;
-    A_new->nRow = m; A_new->nCol = n;
-    A_new->rowStart = new int[m+1];
-    vMemcpy(A.rowStart, m+1, A_new->rowStart);
-    A_new->column = new int[A.rowStart[m]];
-    vMemcpy(A.column, A.rowStart[m], A_new->column);
-    A_new->value = new mfloat[A.rowStart[m]];
-    vMemcpy(A.value, A.rowStart[m], A_new->value);
+//    A_new->nRow = m; A_new->nCol = n;
+//    A_new->rowStart = new int[m+1];
+//    vMemcpy(A.rowStart, m+1, A_new->rowStart);
+//    A_new->column = new int[A.rowStart[m]];
+//    vMemcpy(A.column, A.rowStart[m], A_new->column);
+//    A_new->value = new mfloat[A.rowStart[m]];
+//    vMemcpy(A.value, A.rowStart[m], A_new->value);
+//
+//    AT_new->nRow = n; AT_new->nCol = m;
+//    AT_new->rowStart = new int[n+1];
+//    vMemcpy(AT.rowStart, n+1, AT_new->rowStart);
+//    AT_new->column = new int[AT.rowStart[n]];
+//    vMemcpy(AT.column, AT.rowStart[n], AT_new->column);
+//    AT_new->value = new mfloat[AT.rowStart[n]];
+//    vMemcpy(AT.value, AT.rowStart[n], AT_new->value);
 
-    AT_new->nRow = n; AT_new->nCol = m;
-    AT_new->rowStart = new int[n+1];
-    vMemcpy(AT.rowStart, n+1, AT_new->rowStart);
-    AT_new->column = new int[AT.rowStart[n]];
-    vMemcpy(AT.column, AT.rowStart[n], AT_new->column);
-    AT_new->value = new mfloat[AT.rowStart[n]];
-    vMemcpy(AT.value, AT.rowStart[n], AT_new->value);
+    if (E == nullptr)
+        E = new mfloat[m];
+    if (D == nullptr)
+        D = new mfloat[n];
 
     for (int i = 0; i < m; ++i)
         E[i] = 1.0;

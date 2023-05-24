@@ -32,7 +32,12 @@ for f in lst_probs:
     l = m['lb'].tolist()
     u = m['ub'].tolist()
 
+    l = [x if x != [float('-inf')] else -1e30 for x in l]
+    u = [x if x != [float('inf')] else 1e30 for x in u]
+
+    # b = [x[0] for x in b]
     para = {}
     para['maxADMMiter'] = 300
-    para['maxALMiter'] = 20
+    para['maxALMiter'] = 10
+    para['sigma'] = 1e-2
     py_result = QP_library.QP_solve(Q_value, Q_rowstart, Q_column, A_value, A_rowstart, A_column, b, c, l, u, para)

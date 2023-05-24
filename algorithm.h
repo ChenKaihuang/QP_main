@@ -90,6 +90,7 @@ typedef struct {
 typedef struct input_parameters {
     int max_ADMM_iter = -1;
     int max_ALM_iter = -1;
+    mfloat sigma = -1;
 } input_parameters;
 
 typedef struct output_parameters {
@@ -139,7 +140,12 @@ typedef struct QP_struct {
     spVec_int U_idx;
     std::chrono::steady_clock::time_point time_solve_start;
     mfloat step_size;
+    mfloat *Lorg, *Uorg;
 //    Eigen::SparseMatrix<mfloat> EigenA;
+    double normborg;
+    double normcorg;
+    double *cA;
+    double *rA;
 } QP_struct;
 
 void Eigen_init(QP_struct *QP_space);
@@ -238,7 +244,7 @@ void axpby2(const mfloat a, const mfloat* x, const mfloat b, const mfloat* y, mf
 void axpy_R(const mfloat* a, const mfloat* x, const mfloat* y, mfloat* z, int m, int n, bool byRow = true);
 
 /// z = x.*y, dot product. z can be y.
-mfloat* xdoty(const mfloat* x, const mfloat* y, int len);
+void xdoty(const mfloat* x, const mfloat* y, mfloat* z, int len, bool prod = true);
 
 /// matrix dot product.
 mfloat* xdoty_mat(const mfloat* x, const mfloat* y, int m, int n);
@@ -318,6 +324,9 @@ void My_CG();
 /// Perform Ruiz equilibration for scaling a m by n matrix
 void ruiz_equilibration(sparseRowMatrix A, sparseRowMatrix *A_new, sparseRowMatrix AT, sparseRowMatrix *AT_new, mfloat *D, mfloat *E);
 
+/// pre-processing QP
+void preprocessing(QP_struct *qp);
+
 /// Compute Ax for BiCG
 void BiCG_prod(const mfloat *x, mfloat* output, BiCG_struct *BiCG_space, QP_struct *QP_space);
 
@@ -364,6 +373,7 @@ bool check_termination_SSN();
 
 /// update sigma
 void update_sigma(QP_struct *QP_space);
+void update_sigma_pALM(QP_struct* QP_space);
 
 /// print sparse matrix
 void print_spM(sparseRowMatrix input);
