@@ -7,6 +7,7 @@
 
 //#define USE_CBLAS 1
 #define SSN_debug 1
+//#define sigma_debug 0
 
 using namespace std;
 
@@ -594,7 +595,7 @@ void simple_QP_test() {
     QP_space->m = 2; QP_space->n = 2;
 
     input_parameters para;
-    output_parameters *para_out;
+    output_parameters *para_out = new output_parameters;
     para.max_ALM_iter = 10;
     para.max_ADMM_iter = 61;
     QP_solve(Q, A, QP_space->b, QP_space->c, QP_space->l, QP_space->u, QP_space->m, QP_space->n, para, para_out);
@@ -613,8 +614,8 @@ void simple_ruiz_test() {
 
     sparseRowMatrix AT = get_BT(A);
 
-    sparseRowMatrix *A_new = new sparseRowMatrix;
-    sparseRowMatrix *AT_new = new sparseRowMatrix;
+//    sparseRowMatrix *A_new = new sparseRowMatrix;
+//    sparseRowMatrix *AT_new = new sparseRowMatrix;
 
     mfloat *D = new mfloat [2];
     mfloat *E = new mfloat [2];
@@ -666,19 +667,48 @@ void QP_solve(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat
 }
 
 void sGSADMM_QP(QP_struct *QP_space) {
+    sGSADMM_QP_compute_status(QP_space);
+
     while ((QP_space->iter < QP_space->maxADMMiter) && (!QP_space->sGSADMM_finish)) {
-        sGSADMM_QP_update_y_first(QP_space);
-        sGSADMM_QP_update_w_first(QP_space);
-        sGSADMM_QP_update_z(QP_space);
-        sGSADMM_QP_update_w_second(QP_space);
-        sGSADMM_QP_update_y_second(QP_space);
-        sGSADMM_QP_update_x(QP_space);
 
-        if ((QP_space->iter % sGSADMM_sigma_update_iter(QP_space->iter) == 0) || (QP_space->iter % sGSADMM_print_iter(QP_space->iter) == 0))
-            sGSADMM_QP_compute_status(QP_space);
-
-        update_sigma(QP_space);
         sGSADMM_QP_print_status(QP_space);
+
+        // rescaling
+        rescaling(QP_space);
+
+        // reset gamma
+        if (((QP_space->iter % 1000 == 1) || (QP_space->iter == QP_space->gamma_reset_start)) && (QP_space->gamma_test)) {
+            QP_space->gamma = 1.95;
+        }
+
+        // old iterates
+        if (QP_space->gamma_test) {
+            vMemcpy(QP_space->Qw, QP_space->n, QP_space->Qw_old);
+        }
+
+        sGSADMM_QP_update_y_first(QP_space);
+        cout << norm2(QP_space->y, QP_space->m) << endl;
+        cout << norm2(QP_space->Rd, QP_space->n) << endl;
+        sGSADMM_QP_update_w_first(QP_space);
+        cout << norm2(QP_space->w, QP_space->n) << endl;
+        sGSADMM_QP_update_z(QP_space);
+        cout << norm2(QP_space->z, QP_space->n) << endl;
+        sGSADMM_QP_update_w_second(QP_space);
+        cout << norm2(QP_space->w, QP_space->n) << endl;
+        sGSADMM_QP_update_y_second(QP_space);
+        cout << norm2(QP_space->y, QP_space->m) << endl;
+        sGSADMM_QP_update_x(QP_space);
+        cout << norm2(QP_space->x, QP_space->n) << endl;
+
+        // update workspace
+//        if ((QP_space->iter % sGSADMM_sigma_update_iter(QP_space->iter) == 1) || (QP_space->iter % sGSADMM_print_iter(QP_space->iter) == 1))
+        sGSADMM_QP_compute_status(QP_space);
+
+        // update gamma
+        update_gamma(QP_space);
+        // update sigma
+        update_sigma(QP_space);
+
         QP_space->iter++;
     }
 }
@@ -690,8 +720,13 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
     QP_space->y = new mfloat [m];
     QP_space->y_bar = new mfloat [m];
     QP_space->z = new mfloat [n];
+    QP_space->temp_z = new mfloat [n];
+    QP_space->z_old = new mfloat [n];
+    QP_space->zorg = new mfloat [n];
     QP_space->z_new = new mfloat [n];
     QP_space->x = new mfloat [n];
+    QP_space->x_old = new mfloat [n];
+    QP_space->xorg = new mfloat [n];
     QP_space->y_old = new mfloat [n];
     QP_space->w_old = new mfloat [n];
     QP_space->y0 = new mfloat [n];
@@ -706,18 +741,27 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
         QP_space->y_old[i] = 0;
         QP_space->y0[i] = 0;
     }
-    QP_space->gamma = 1.618;
+    QP_space->gamma = QP_space->input_para.gamma;
 //    QP_space->sigma = 1.0;
     QP_space->update_y_rhs = new mfloat [m];
     QP_space->Qw = new mfloat [n];
+    QP_space->Qw_org = new mfloat [n];
+    QP_space->Qw_old = new mfloat [n];
     QP_space->Qx = new mfloat [n];
+    QP_space->Qx_old = new mfloat [n];
+    QP_space->Qx_org = new mfloat [n];
     QP_space->RQ = new mfloat [n];
+    QP_space->RQ_org = new mfloat [n];
     QP_space->RC = new mfloat [n];
+    QP_space->RCorg = new mfloat [n];
     spMV_R(QP_space->Q, QP_space->w, n, n, QP_space->Qw);
+    spMV_R(QP_space->Q, QP_space->x, n, n, QP_space->Qx);
     QP_space->ATy = new mfloat [n];
     QP_space->Ax = new mfloat [m];
     QP_space->Rd = new mfloat [n];
+    QP_space->Rd_org = new mfloat [n];
     QP_space->Rp = new mfloat [m];
+    QP_space->Rp_org = new mfloat [m];
     QP_space->z_Qw_c = new mfloat [n];
     QP_space->A_times_z_Qw_c = new mfloat [m];
     QP_space->SSN_compute_obj_temp1 = new mfloat [n];
@@ -727,6 +771,7 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
 //    QP_space->Qw_old = new mfloat [n];
     QP_space->Az = new mfloat [n];
     QP_space->dz = new mfloat [n];
+    QP_space->dzorg = new mfloat [n];
     QP_space->Qz = new mfloat [n];
     QP_space->dw = new mfloat [n];
     QP_space->SSN_dwdy = new mfloat [m+n];
@@ -742,22 +787,27 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
     QP_space->pALM_z_projected = new mfloat [n];
     QP_space->normQ = norm2(QP_space->Q.value, QP_space->Q.rowStart[QP_space->Q.nRow]);
     QP_space->iter = 1;
-    QP_space->kappa = 1; // [1e-4, 1e2] depends on problem.
+//    QP_space->kappa = 1; // [1e-4, 1e2] depends on problem.
     QP_space->sGSADMM_tol = 1e-4;
     QP_space->sGSADMM_finish = false;
+    QP_space->kappa = QP_space->input_para.kappa;
 
-    if (QP_space->input_para.max_ADMM_iter != -1)
+//    if (QP_space->input_para.max_ADMM_iter != -1)
         QP_space->maxADMMiter = QP_space->input_para.max_ADMM_iter;
-    else
-        QP_space->maxADMMiter = 1000;
+//    else
+//        QP_space->maxADMMiter = 1000;
 
-    if (QP_space->input_para.max_ALM_iter != -1)
+//    if (QP_space->input_para.max_ALM_iter != -1)
         QP_space->maxALMiter = QP_space->input_para.max_ALM_iter;
-    else
-        QP_space->maxALMiter = 1000;
+//    else
+//        QP_space->maxALMiter = 1000;
 
-    if (QP_space->input_para.sigma > 0)
+//    if (QP_space->input_para.sigma > 0)
         QP_space->sigma = QP_space->input_para.sigma;
+
+
+//    else
+//        QP_space->sigma = 1;
 
     Eigen_init(QP_space);
 //    Eigen::SparseMatrix<mfloat> EigenA = get_eigen_spMat(QP_space->A);
@@ -812,51 +862,138 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
 //    PARDISO_numerical_fact(QP_space->PDS_IQ);
 }
 
+void rescaling(QP_struct *qp) {
+    int iter = qp->iter;
+    if ((max(qp->inf_p_org, qp->inf_d_org) > 1e-2) && (iter < 500)) {
+        if (qp->rescale >= 1) {
+            if ((iter == 10) || ((iter % 53 == 0) && (iter >100) && (iter < 200)))
+                rescalingADMM(qp);
+        }
+        if (qp->rescale >= 2) {
+            if ((iter % 203 == 0) && (iter >200) && (iter < 1000))
+                rescalingADMM(qp);
+        }
+        if (qp->rescale >= 3) {
+            if ((iter % 503 == 0) && (iter >1000) && (iter < 10000))
+                rescalingADMM(qp);
+        }
+    }
+}
+
+void rescalingADMM(QP_struct *qp) {
+    int m = qp->m, n = qp->n;
+    mfloat normP = norm2(qp->x, n);
+    mfloat normD = max(norm2(qp->z, n), distance(qp->Rd, qp->z, n));
+    mfloat PD_ratio = max(normP/normD, normD/normP);
+    if (PD_ratio > 1.1) {
+        mfloat bscale2 = normP;
+        mfloat cscale2 = normD;
+        mfloat inv_bscale2 = 1/bscale2;
+        mfloat inv_cscale2 = 1/cscale2;
+        ax(inv_bscale2, qp->b, qp->b, m);
+        ax(inv_cscale2, qp->c, qp->c, n);
+        ax(inv_bscale2, qp->l, qp->l, n);
+        ax(inv_bscale2, qp->u, qp->u, n);
+        qp->normb /= bscale2;
+        qp->normc /= cscale2;
+
+        ax(inv_bscale2, qp->x, qp->x, n);
+        ax(inv_cscale2, qp->z, qp->z, n);
+        ax(inv_cscale2, qp->y, qp->y, m);
+        ax(inv_bscale2, qp->w, qp->w, n);
+        ax(inv_cscale2, qp->Qx, qp->Qx, n);
+        ax(inv_cscale2, qp->Qw, qp->Qw, n);
+
+        qp->bscale *= bscale2;
+        qp->cscale *= cscale2;
+
+        qp->sigma *= cscale2/bscale2;
+        mfloat bc_ratio = bscale2 / cscale2;
+        for (int r = 0; r < qp->n; ++r) {
+            for (int j = qp->Q.rowStart[r]; j < qp->Q.rowStart[r+1]; ++j) {
+                qp->Q.value[j] *= bc_ratio;
+            }
+        }
+
+        sGSADMM_QP_refact_IQ(qp);
+        sGSADMM_QP_compute_status(qp);
+
+        printf("rescale = %d: %d, %3.2e, %3.2e\n", qp->rescale, qp->iter, normP, normD);
+        qp->rescale++;
+        qp->prim_win = 0;
+        qp->dual_win = 0;
+    }
+}
+
 void sGSADMM_QP_update_y_first(QP_struct *QP_space) {
     mfloat *rhs = QP_space->update_y_rhs;
     mfloat *z_Qw_c = QP_space->z_Qw_c;
     int m = QP_space->m, n = QP_space->n;
 
-    spMV_R(QP_space->A, QP_space->x, m, n, QP_space->Ax);
-    axpy(-1, QP_space->Ax, QP_space->b, rhs, m);
-    ax(1/QP_space->sigma, rhs, rhs, m);
-
-    axpy(-1, QP_space->Qw, QP_space->z, z_Qw_c, n);
-    axpy(-1, QP_space->c, z_Qw_c, z_Qw_c, n);
+    axpy(-1, QP_space->ATy, QP_space->Rd, QP_space->z_Qw_c, n);
     spMV_R(QP_space->A, z_Qw_c, m, n, QP_space->A_times_z_Qw_c);
+    axpby(-1, QP_space->A_times_z_Qw_c, 1/QP_space->sigma, QP_space->Rp, rhs, m);
 
-    axpy(-1, QP_space->A_times_z_Qw_c, rhs, rhs, m);
+//    spMV_R(QP_space->A, QP_space->x, m, n, QP_space->Ax);
+//    axpy(-1, QP_space->Ax, QP_space->b, rhs, m);
+//    ax(1/QP_space->sigma, rhs, rhs, m);
+//
+//    axpy(-1, QP_space->Qw, QP_space->z, z_Qw_c, n);
+//    axpy(-1, QP_space->c, z_Qw_c, z_Qw_c, n);
+//    spMV_R(QP_space->A, z_Qw_c, m, n, QP_space->A_times_z_Qw_c);
+//
+//    axpy(-1, QP_space->A_times_z_Qw_c, rhs, rhs, m);
 
     vMemcpy(rhs, m, QP_space->Eigen_rhs_y.data());
     QP_space->Eigen_result_y = QP_space->Eigen_linear_AAT.LLTsolver.solve(QP_space->Eigen_rhs_y);
-    vMemcpy(QP_space->Eigen_result_y.data(), m, QP_space->y_bar);
+    vMemcpy(QP_space->Eigen_result_y.data(), m, QP_space->y);
 
+    spMV_R(QP_space->AT, QP_space->y, n, m, QP_space->ATy);
+    axpy(1, QP_space->ATy, QP_space->z_Qw_c, QP_space->Rd, n);
+
+    cout << norm2(QP_space->ATy, n) << endl;
+    cout << norm2(z_Qw_c, n) << endl;
 //            PARDISO_solve(QP_space->PDS_A, rhs);
 //    vMemcpy(QP_space->PDS_A->x, n, QP_space->y_bar);
 }
 
 void sGSADMM_QP_update_y_second(QP_struct *QP_space) {
+//    mfloat *rhs = QP_space->update_y_rhs;
+//    mfloat *z_Qw_c = QP_space->z_Qw_c;
+//    int m = QP_space->m, n = QP_space->n;
+//
+//    axpy(-1, QP_space->Ax, QP_space->b, rhs, m);
+//    ax(1/QP_space->sigma, rhs, rhs, m);
+//
+//    spMV_R(QP_space->Q, QP_space->w, n, n, QP_space->Qw);
+//    axpy(-1, QP_space->Qw, QP_space->z, z_Qw_c, n);
+//    axpy(-1, QP_space->c, z_Qw_c, z_Qw_c, n);
+//    spMV_R(QP_space->A, z_Qw_c, m, n, QP_space->A_times_z_Qw_c);
+//
+//    axpy(-1, QP_space->A_times_z_Qw_c, rhs, rhs, m);
+//
+//
+//    vMemcpy(rhs, m, QP_space->Eigen_rhs_y.data());
+//    QP_space->Eigen_result_y = QP_space->Eigen_linear_AAT.LLTsolver.solve(QP_space->Eigen_rhs_y);
+//    vMemcpy(QP_space->Eigen_result_y.data(), m, QP_space->y);
+
+
     mfloat *rhs = QP_space->update_y_rhs;
     mfloat *z_Qw_c = QP_space->z_Qw_c;
     int m = QP_space->m, n = QP_space->n;
 
-    axpy(-1, QP_space->Ax, QP_space->b, rhs, m);
-    ax(1/QP_space->sigma, rhs, rhs, m);
-
-    spMV_R(QP_space->Q, QP_space->w, n, n, QP_space->Qw);
-    axpy(-1, QP_space->Qw, QP_space->z, z_Qw_c, n);
-    axpy(-1, QP_space->c, z_Qw_c, z_Qw_c, n);
+    axpy(-1, QP_space->ATy, QP_space->Rd, QP_space->z_Qw_c, n);
     spMV_R(QP_space->A, z_Qw_c, m, n, QP_space->A_times_z_Qw_c);
-
-    axpy(-1, QP_space->A_times_z_Qw_c, rhs, rhs, m);
+    axpby(-1, QP_space->A_times_z_Qw_c, 1/QP_space->sigma, QP_space->Rp, rhs, m);
 
 
     vMemcpy(rhs, m, QP_space->Eigen_rhs_y.data());
     QP_space->Eigen_result_y = QP_space->Eigen_linear_AAT.LLTsolver.solve(QP_space->Eigen_rhs_y);
     vMemcpy(QP_space->Eigen_result_y.data(), m, QP_space->y);
 
-//    PARDISO_solve(QP_space->PDS_A, rhs);
-//    vMemcpy(QP_space->PDS_A->x, n, QP_space->y);
+    spMV_R(QP_space->AT, QP_space->y, n, m, QP_space->ATy);
+    axpy(1, QP_space->ATy, QP_space->z_Qw_c, QP_space->Rd, n);
+
 }
 
 void sGSADMM_QP_update_w_first(QP_struct *QP_space) {
@@ -865,19 +1002,24 @@ void sGSADMM_QP_update_w_first(QP_struct *QP_space) {
     int m = QP_space->m, n = QP_space->n;
 //    mfloat *rhs2 = new mfloat [n];
 
-    spMV_R(QP_space->AT, QP_space->y_bar, n, m, QP_space->ATy);
-    axpy(-1, QP_space->ATy, QP_space->z, z_ATy_c, n);
-    axpy(-1, QP_space->c, z_ATy_c, z_ATy_c, n);
+    axpy(1, QP_space->Qw, QP_space->Rd, z_ATy_c, n);
+    axpy(1/QP_space->sigma, QP_space->x, z_ATy_c, rhs, n);
 
-    axpy(1/QP_space->sigma, QP_space->x, QP_space->z_ATy_c, rhs, n);
+//    spMV_R(QP_space->AT, QP_space->y_bar, n, m, QP_space->ATy);
+//    axpy(1, QP_space->ATy, QP_space->z, z_ATy_c, n);
+//    axpy(-1, QP_space->c, z_ATy_c, z_ATy_c, n);
+//
+//    axpy(1/QP_space->sigma, QP_space->x, QP_space->z_ATy_c, rhs, n);
 
-
+    cout << "w rhs " << norm2(rhs, n) << endl;
     vMemcpy(rhs, n, QP_space->Eigen_rhs_w.data());
     QP_space->Eigen_result_w = QP_space->Eigen_linear_IQ.LLTsolver.solve(QP_space->Eigen_rhs_w);
-    vMemcpy(QP_space->Eigen_result_w.data(), n, QP_space->w_bar);
+    vMemcpy(QP_space->Eigen_result_w.data(), n, QP_space->w);
 
 
-//    spMV_R(QP_space->Q, rhs, n, n, rhs2);
+    spMV_R(QP_space->Q, QP_space->w, n, n, QP_space->Qw);
+
+    axpy(-1, QP_space->Qw, QP_space->z_ATy_c, QP_space->Rd, n);
 
 
 //    QP_space->Eigen_linear_IQ.LLTsolver.solve(rhs);
@@ -885,17 +1027,41 @@ void sGSADMM_QP_update_w_first(QP_struct *QP_space) {
 }
 
 void sGSADMM_QP_update_w_second(QP_struct *QP_space) {
-    mfloat *rhs = QP_space->update_w_rhs;
-//    mfloat *z_ATy_c = QP_space->z_ATy_c;
-    int n = QP_space->n;
+//    mfloat *rhs = QP_space->update_w_rhs;
+////    mfloat *z_ATy_c = QP_space->z_ATy_c;
+//    int n = QP_space->n;
+//
+////    spMV_R(QP_space->Q, QP_space->dz, n, n, QP_space->Qdz);
+//    axpy(1, QP_space->dz, rhs, rhs, n);
+//
+//
+//    vMemcpy(rhs, n, QP_space->Eigen_rhs_w.data());
+//    QP_space->Eigen_result_w = QP_space->Eigen_linear_IQ.LLTsolver.solve(QP_space->Eigen_rhs_w);
+//    vMemcpy(QP_space->Eigen_result_w.data(), n, QP_space->w);
 
-//    spMV_R(QP_space->Q, QP_space->dz, n, n, QP_space->Qdz);
-    axpy(1, QP_space->dz, rhs, rhs, n);
+    mfloat *rhs = QP_space->update_w_rhs;
+    mfloat *z_ATy_c = QP_space->z_ATy_c;
+    int m = QP_space->m, n = QP_space->n;
+//    mfloat *rhs2 = new mfloat [n];
+
+    axpy(1, QP_space->Qw, QP_space->Rd, z_ATy_c, n);
+    axpy(1/QP_space->sigma, QP_space->x, z_ATy_c, rhs, n);
+
+//    spMV_R(QP_space->AT, QP_space->y_bar, n, m, QP_space->ATy);
+//    axpy(1, QP_space->ATy, QP_space->z, z_ATy_c, n);
+//    axpy(-1, QP_space->c, z_ATy_c, z_ATy_c, n);
+//
+//    axpy(1/QP_space->sigma, QP_space->x, QP_space->z_ATy_c, rhs, n);
 
 
     vMemcpy(rhs, n, QP_space->Eigen_rhs_w.data());
     QP_space->Eigen_result_w = QP_space->Eigen_linear_IQ.LLTsolver.solve(QP_space->Eigen_rhs_w);
     vMemcpy(QP_space->Eigen_result_w.data(), n, QP_space->w);
+
+
+    spMV_R(QP_space->Q, QP_space->w, n, n, QP_space->Qw);
+
+    axpy(-1, QP_space->Qw, QP_space->z_ATy_c, QP_space->Rd, n);
 
 //    PARDISO_solve(QP_space->PDS_IQ, rhs);
 //    vMemcpy(QP_space->PDS_IQ->x, n, QP_space->w);
@@ -906,17 +1072,24 @@ void sGSADMM_QP_update_z(QP_struct *QP_space) {
     mfloat *projected = QP_space->update_z_projected;
     int n = QP_space->n;
 
-    spMV_R(QP_space->Q, QP_space->w_bar, n, n, QP_space->Qw);
-    axpy(-1, QP_space->Qw, QP_space->ATy, unProjected, n);
-    axpy(-1, QP_space->c, unProjected, unProjected, n);
-    axpy(QP_space->sigma, unProjected, QP_space->x, unProjected, n);
+    axpy(-1, QP_space->z, QP_space->Rd, QP_space->temp_z, n);
+    axpy(QP_space->sigma, QP_space->temp_z, QP_space->x, unProjected, n);
+//
+//    spMV_R(QP_space->Q, QP_space->w_bar, n, n, QP_space->Qw);
+//    axpy(-1, QP_space->Qw, QP_space->ATy, unProjected, n);
+//    axpy(-1, QP_space->c, unProjected, unProjected, n);
+//    axpy(QP_space->sigma, unProjected, QP_space->x, unProjected, n);
 
     proj(unProjected, projected, n, QP_space->l, QP_space->u);
-    axpy(-1, unProjected, projected, QP_space->z_new, n);
-    ax(1/QP_space->sigma, QP_space->z_new, QP_space->z_new, n);
+//    axpy(-1, unProjected, projected, QP_space->z_new, n);
+//    ax(1/QP_space->sigma, QP_space->z_new, QP_space->z_new, n);
+//
+//    axpy(-1, QP_space->z, QP_space->z_new, QP_space->dz, n);
+//    vMemcpy(QP_space->z_new, n, QP_space->z);
+    axpy(-1, unProjected, projected, QP_space->z, n);
+    ax(1/QP_space->sigma, QP_space->z, QP_space->z, n);
 
-    axpy(-1, QP_space->z, QP_space->z_new, QP_space->dz, n);
-    vMemcpy(QP_space->z_new, n, QP_space->z);
+    axpy(1, QP_space->temp_z, QP_space->z, QP_space->Rd, n);
 }
 
 void sGSADMM_QP_update_x(QP_struct *QP_space) {
@@ -925,21 +1098,91 @@ void sGSADMM_QP_update_x(QP_struct *QP_space) {
     int n = QP_space->n;
     int m = QP_space->m;
     spMV_R(QP_space->AT, QP_space->y, n, m, QP_space->ATy);
-    axpy(gamma*sigma, QP_space->z_Qw_c, QP_space->x, QP_space->x, n);
-    axpy(gamma*sigma, QP_space->ATy, QP_space->x, QP_space->x, n);
+    axpy(gamma*sigma, QP_space->Rd, QP_space->x, QP_space->x, n);
+//    axpy(gamma*sigma, QP_space->ATy, QP_space->x, QP_space->x, n);
 }
 
 void sGSADMM_QP_compute_status(QP_struct *QP_space) {
     int m = QP_space->m, n = QP_space->n;
+
+    // necessary for both org and after-scaling
     spMV_R(QP_space->A, QP_space->x, m, n, QP_space->Ax);
     axpy(-1, QP_space->Ax, QP_space->b, QP_space->Rp, m);
-    QP_space->inf_p = norm2(QP_space->Rp, m)/(1 + norm2(QP_space->b, m));
 
     axpy(-1, QP_space->Qw, QP_space->z, QP_space->Rd, n);
     axpy(-1, QP_space->c, QP_space->Rd, QP_space->Rd, n);
     spMV_R(QP_space->AT, QP_space->y, n, m, QP_space->ATy);
     axpy(1, QP_space->ATy, QP_space->Rd, QP_space->Rd, n);
-    QP_space->inf_d = norm2(QP_space->Rd, n)/(1 + norm2(QP_space->c, n));
+
+    spMV_R(QP_space->Q, QP_space->x, n, n, QP_space->Qx);
+
+    QP_space->primal_obj = xTy(QP_space->x, QP_space->Qx, n)/2 + xTy(QP_space->c, QP_space->x, n);
+    QP_space->dual_obj = xTy(QP_space->x, QP_space->z, n);
+    QP_space->dual_obj += -xTy(QP_space->w, QP_space->Qw, n)/2 + xTy(QP_space->b, QP_space->y, m);
+
+    // only for after-scaling, update sigma use
+//    if (QP_space->iter % sGSADMM_sigma_update_iter(QP_space->iter) == 1) {
+    if (1) {
+        axpy(-1, QP_space->Qw, QP_space->Qx, QP_space->RQ, n);
+
+        axpy(-1, QP_space->z, QP_space->x, QP_space->dz, n);
+        proj(QP_space->dz, QP_space->update_z_projected, n, QP_space->l, QP_space->u);
+        axpy(-1, QP_space->update_z_projected, QP_space->x, QP_space->RC, n);
+
+        QP_space->inf_p = norm2(QP_space->Rp, m)/(1 + QP_space->normb);
+        QP_space->inf_d = norm2(QP_space->Rd, n)/(1 + QP_space->normc);
+        QP_space->inf_Q = norm2(QP_space->RQ, n)/(1 + norm2(QP_space->Qx, n) + norm2(QP_space->Qw, n));
+        QP_space->inf_C = norm2(QP_space->RC, n)/(1 + norm2(QP_space->x, n) + norm2(QP_space->z, n));
+        QP_space->inf_g = abs(QP_space->primal_obj - QP_space->dual_obj)/(1+abs(QP_space->primal_obj)+abs(QP_space->dual_obj));
+    }
+
+    // orginal residuals, only when print
+//    if (QP_space->iter % sGSADMM_print_iter(QP_space->iter) == 1) {
+    if (1) {
+        xdoty(QP_space->x, QP_space->cA, QP_space->xorg, n, true);
+        ax(QP_space->bscale, QP_space->xorg, QP_space->xorg, n);
+        xdoty(QP_space->z, QP_space->cA, QP_space->zorg, n, false);
+        ax(QP_space->cscale, QP_space->zorg, QP_space->zorg, n);
+
+        axpy(-1, QP_space->zorg, QP_space->xorg, QP_space->dzorg, n);
+        proj(QP_space->dzorg, QP_space->update_z_projected, n, QP_space->Lorg, QP_space->Uorg);
+        axpy(-1, QP_space->update_z_projected, QP_space->xorg, QP_space->RCorg, n);
+        QP_space->inf_C_org = norm2(QP_space->RCorg, n)/(1 + norm2(QP_space->xorg, n) + norm2(QP_space->zorg, n));
+
+
+        xdoty(QP_space->Rp, QP_space->rA, QP_space->Rp_org, m, false);
+        ax(QP_space->bscale, QP_space->Rp_org, QP_space->Rp_org, m);
+        QP_space->inf_p_org = norm2(QP_space->Rp_org, m)/(1 + QP_space->normborg);
+
+        xdoty(QP_space->Rd, QP_space->cA, QP_space->Rd_org, n, false);
+        ax(QP_space->cscale, QP_space->Rd_org, QP_space->Rd_org, n);
+        QP_space->inf_d_org = norm2(QP_space->Rd_org, n)/(1 + QP_space->normcorg);
+
+        xdoty(QP_space->Qx, QP_space->cA, QP_space->Qx_org, n, false);
+        ax(QP_space->cscale, QP_space->Qx_org, QP_space->Qx_org, n);
+        xdoty(QP_space->Qw, QP_space->cA, QP_space->Qw_org, n, false);
+        ax(QP_space->cscale, QP_space->Qw_org, QP_space->Qw_org, n);
+        axpy(-1, QP_space->Qw_org, QP_space->Qx_org, QP_space->RQ_org, n);
+        QP_space->inf_Q_org = norm2(QP_space->RQ_org, n)/(1 + norm2(QP_space->Qx_org, n) + norm2(QP_space->Qw_org, n));
+
+        QP_space->primal_obj_org = QP_space->primal_obj * QP_space->bscale * QP_space->cscale;
+        QP_space->dual_obj_org = QP_space->dual_obj * QP_space->bscale * QP_space->cscale;
+        QP_space->inf_g_org = abs(QP_space->primal_obj_org - QP_space->dual_obj_org)/(1+abs(QP_space->primal_obj_org)+abs(QP_space->dual_obj_org));
+    }
+
+}
+
+void pALM_QP_compute_status(QP_struct *QP_space) {
+    int m = QP_space->m, n = QP_space->n;
+    spMV_R(QP_space->A, QP_space->x, m, n, QP_space->Ax);
+    axpy(-1, QP_space->Ax, QP_space->b, QP_space->Rp, m);
+    QP_space->inf_p = norm2(QP_space->Rp, m)/(1 + QP_space->normb);
+
+    axpy(-1, QP_space->Qw, QP_space->z, QP_space->Rd, n);
+    axpy(-1, QP_space->c, QP_space->Rd, QP_space->Rd, n);
+    spMV_R(QP_space->AT, QP_space->y, n, m, QP_space->ATy);
+    axpy(1, QP_space->ATy, QP_space->Rd, QP_space->Rd, n);
+    QP_space->inf_d = norm2(QP_space->Rd, n)/(1 + QP_space->normc);
 
     spMV_R(QP_space->Q, QP_space->x, n, n, QP_space->Qx);
     axpy(-1, QP_space->Qw, QP_space->Qx, QP_space->RQ, n);
@@ -951,9 +1194,41 @@ void sGSADMM_QP_compute_status(QP_struct *QP_space) {
     QP_space->inf_C = norm2(QP_space->RC, n)/(1 + norm2(QP_space->x, n) + norm2(QP_space->z, n));
 
     QP_space->primal_obj = xTy(QP_space->x, QP_space->Qx, n)/2 + xTy(QP_space->c, QP_space->x, n);
-    QP_space->dual_obj = -support_function(QP_space->z, QP_space->l, QP_space->u, n, &QP_space->infty_z);
+    QP_space->dual_obj = xTy(QP_space->x, QP_space->z, n);
     QP_space->dual_obj += -xTy(QP_space->w, QP_space->Qw, n)/2 + xTy(QP_space->b, QP_space->y, m);
-    QP_space->inf_g = (QP_space->primal_obj - QP_space->dual_obj)/(1+abs(QP_space->primal_obj)+abs(QP_space->dual_obj));
+    QP_space->inf_g = abs(QP_space->primal_obj - QP_space->dual_obj)/(1+abs(QP_space->primal_obj)+abs(QP_space->dual_obj));
+
+
+    // orginal residuals, only when print
+    xdoty(QP_space->x, QP_space->cA, QP_space->xorg, n, true);
+    ax(QP_space->bscale, QP_space->xorg, QP_space->xorg, n);
+    xdoty(QP_space->z, QP_space->cA, QP_space->zorg, n, false);
+    ax(QP_space->cscale, QP_space->zorg, QP_space->zorg, n);
+
+    axpy(-1, QP_space->zorg, QP_space->xorg, QP_space->dzorg, n);
+    proj(QP_space->dzorg, QP_space->update_z_projected, n, QP_space->Lorg, QP_space->Uorg);
+    axpy(-1, QP_space->update_z_projected, QP_space->xorg, QP_space->RCorg, n);
+    QP_space->inf_C_org = norm2(QP_space->RCorg, n)/(1 + norm2(QP_space->xorg, n) + norm2(QP_space->zorg, n));
+
+
+    xdoty(QP_space->Rp, QP_space->rA, QP_space->Rp_org, m, false);
+    ax(QP_space->bscale, QP_space->Rp_org, QP_space->Rp_org, m);
+    QP_space->inf_p_org = norm2(QP_space->Rp_org, m)/(1 + QP_space->normborg);
+
+    xdoty(QP_space->Rd, QP_space->cA, QP_space->Rd_org, n, false);
+    ax(QP_space->cscale, QP_space->Rd_org, QP_space->Rd_org, n);
+    QP_space->inf_d_org = norm2(QP_space->Rd_org, n)/(1 + QP_space->normcorg);
+
+    xdoty(QP_space->Qx, QP_space->cA, QP_space->Qx_org, n, false);
+    ax(QP_space->cscale, QP_space->Qx_org, QP_space->Qx_org, n);
+    xdoty(QP_space->Qw, QP_space->cA, QP_space->Qw_org, n, false);
+    ax(QP_space->cscale, QP_space->Qw_org, QP_space->Qw_org, n);
+    axpy(-1, QP_space->Qw_org, QP_space->Qx_org, QP_space->RQ_org, n);
+    QP_space->inf_Q_org = norm2(QP_space->RQ_org, n)/(1 + norm2(QP_space->Qx_org, n) + norm2(QP_space->Qw_org, n));
+
+    QP_space->primal_obj_org = QP_space->primal_obj * QP_space->bscale * QP_space->cscale;
+    QP_space->dual_obj_org = QP_space->dual_obj * QP_space->bscale * QP_space->cscale;
+    QP_space->inf_g_org = abs(QP_space->primal_obj_org - QP_space->dual_obj_org)/(1+abs(QP_space->primal_obj_org)+abs(QP_space->dual_obj_org));
 }
 
 void sGSADMM_QP_refact_IQ(QP_struct* QP_space) {
@@ -975,18 +1250,28 @@ void sGSADMM_QP_refact_IQ(QP_struct* QP_space) {
 //    QP_space->PDS_IQ->ja = QP_space->IQ.column;
     mfloat inv_sigma_old = 1/QP_space->sigma_old;
     mfloat inv_sigma = 1/QP_space->sigma;
-    QP_space->EigenIQ -= inv_sigma_old*QP_space->EigenI;
-    QP_space->EigenIQ += inv_sigma*QP_space->EigenI;
+//    QP_space->EigenIQ -= inv_sigma_old*QP_space->EigenI;
+//    QP_space->EigenIQ += inv_sigma*QP_space->EigenI;
 //    for (int i = 0; i < QP_space->n; ++i) {
 //        QP_space->PDS_IQ->a[QP_space->PDS_IQ->ia[i]-1] += -inv_sigma_old + inv_sigma;
 
 //    }
+    QP_space->EigenQ = get_eigen_spMat(QP_space->Q);
+//    QP_space->EigenI.resize(QP_space->n, QP_space->n);
+//    QP_space->EigenI.setIdentity();
+    QP_space->EigenIQ = 1/QP_space->sigma*QP_space->EigenI + QP_space->EigenQ;
     QP_space->Eigen_linear_IQ.LLTsolver.factorize(QP_space->EigenIQ);
 //    PARDISO_numerical_fact(QP_space->PDS_IQ);
 }
 
 int sGSADMM_print_iter(int iter) {
-    return 20;
+    return 1;
+    if (iter <= 200)
+        return 50;
+    else if (iter <= 2000)
+        return 100;
+    else
+        return 500;
 }
 
 int pALM_print_iter(int iter) {
@@ -996,13 +1281,13 @@ int pALM_print_iter(int iter) {
 
 void sGSADMM_QP_print_status(QP_struct* QP_space) {
     if (QP_space->iter == 1) {
-        printf("iter    inf_p      inf_d       inf_Q       inf_C       obj_p        obj_d       inf_g       sigma       time\n");
+        printf("iter    obj_p          obj_d           inf_g     inf_p      inf_d       inf_Q      inf_C      sigma       tau      time\n");
     }
     std::vector<mfloat> inf;
     mfloat time_solve_now = time_since(QP_space->time_solve_start);
     if (QP_space->iter % sGSADMM_print_iter(QP_space->iter) == 0) {
-        printf("%4d    %3.2e   %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2f\n", QP_space->iter, QP_space->inf_p, QP_space->inf_d, QP_space->inf_Q, QP_space->inf_C, QP_space->primal_obj, QP_space->dual_obj, QP_space->inf_g, QP_space->sigma, time_solve_now);
-        inf = {QP_space->inf_p, QP_space->inf_d, QP_space->inf_Q, QP_space->inf_C, QP_space->inf_g};
+        printf("%4d    %7.6e   %7.6e    %2.1e    %2.1e    %2.1e    %2.1e    %2.1e    %2.1e    %2.1e    %3.2f\n", QP_space->iter, QP_space->primal_obj_org, QP_space->dual_obj_org, QP_space->inf_g_org, QP_space->inf_p_org, QP_space->inf_d_org, QP_space->inf_Q_org, QP_space->inf_C_org, QP_space->sigma, QP_space->tau, time_solve_now);
+        inf = {QP_space->inf_p_org, QP_space->inf_d_org, min(max(QP_space->inf_Q_org, QP_space->inf_C_org), QP_space->inf_g_org)};
         if (*max_element(inf.begin(), inf.end()) < QP_space->sGSADMM_tol) {
             QP_space->sGSADMM_finish = true;
             cout << "sGSADMM error is " << *max_element(inf.begin(), inf.end()) << endl;
@@ -1013,13 +1298,13 @@ void sGSADMM_QP_print_status(QP_struct* QP_space) {
 
 void pALM_QP_print_status(QP_struct* QP_space) {
     if (QP_space->iter == 1) {
-        printf("iter    inf_p      inf_d       inf_Q       inf_C       obj_p        obj_d       inf_g       sigma       tau      step       time\n");
+        printf("iter    obj_p         obj_d           inf_p      inf_d       inf_Q       inf_C       inf_g       sigma       tau      step       time\n");
     }
     std::vector<mfloat> inf;
     mfloat time_solve_now = time_since(QP_space->time_solve_start);
     if (QP_space->iter % pALM_print_iter(QP_space->iter) == 0) {
-        printf("%4d    %3.2e   %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2e    %3.2f\n", QP_space->iter, QP_space->inf_p, QP_space->inf_d, QP_space->inf_Q, QP_space->inf_C, QP_space->primal_obj, QP_space->dual_obj, QP_space->inf_g, QP_space->sigma, QP_space->tau, QP_space->step_size, time_solve_now);
-        inf = {QP_space->inf_p, QP_space->inf_d, QP_space->inf_Q, QP_space->inf_C, abs(QP_space->inf_g)};
+        printf("%4d    %7.6e   %7.6e    %2.1e    %2.1e    %2.1e    %2.1e    %2.1e    %2.1e    %2.1e    %2.1e    %3.2f\n", QP_space->iter, QP_space->primal_obj_org, QP_space->dual_obj_org, QP_space->inf_p_org, QP_space->inf_d_org, QP_space->inf_Q_org, QP_space->inf_C_org, QP_space->inf_g_org, QP_space->sigma, QP_space->tau, QP_space->step_size, time_solve_now);
+        inf = {QP_space->inf_p_org, QP_space->inf_d_org, QP_space->inf_Q_org, QP_space->inf_C_org, abs(QP_space->inf_g_org)};
         if (*max_element(inf.begin(), inf.end()) < QP_space->pALM_tol) {
             QP_space->pALM_finish = true;
             cout << "pALM error is " << *max_element(inf.begin(), inf.end()) << endl;
@@ -1125,7 +1410,7 @@ void pALM_SSN_QP(QP_struct* QP_space) {
     QP_space->iter = 1;
 
     // pALM
-    sGSADMM_QP_compute_status(QP_space);
+    pALM_QP_compute_status(QP_space);
     pALM_QP_print_status(QP_space);
     while ((QP_space->iter < QP_space->maxALMiter) && (!QP_space->pALM_finish) ) {
         QP_space->tau = max(1e-12, QP_space->kappa*pow(QP_space->iter, -2.5)) * QP_space->sigma;
@@ -1181,7 +1466,7 @@ void pALM_SSN_QP(QP_struct* QP_space) {
         vMemcpy(QP_space->w, n, QP_space->w0);
 //        if ((QP_space->iter % sGSADMM_sigma_update_iter(QP_space->iter) == 0) || (QP_space->iter % sGSADMM_print_iter(QP_space->iter) == 0))
         pALM_update_variables(QP_space);
-        sGSADMM_QP_compute_status(QP_space);
+        pALM_QP_compute_status(QP_space);
         QP_space->SSN_tol = 0.1*QP_space->inf_p;
         //        update_sigma(QP_space);
         pALM_QP_print_status(QP_space);
@@ -1585,45 +1870,106 @@ void find_step(int stepopt) {
 //}
 
 int sGSADMM_sigma_update_iter(int iter) {
-    int sigma_update_iter = 25;
+    int sigma_update_iter = 1;
     if (iter < 10)
         sigma_update_iter = 2;
     else if (iter < 20)
         sigma_update_iter = 3;
     else if (iter < 200)
-        sigma_update_iter = 3;
+        sigma_update_iter = 5;
     else if (iter < 500)
         sigma_update_iter = 10;
 
     return sigma_update_iter;
 }
 
+void save_solution(QP_struct *qp) {
+    vMemcpy(qp->x, qp->n, qp->x_old);
+    vMemcpy(qp->z, qp->n, qp->z_old);
+    vMemcpy(qp->w, qp->n, qp->w_old);
+    vMemcpy(qp->Qx, qp->n, qp->Qx_old);
+    vMemcpy(qp->Qw, qp->n, qp->Qw_old);
+    vMemcpy(qp->y, qp->m, qp->y_old);
+}
+
+void read_solution(QP_struct *qp) {
+    vMemcpy(qp->x_old, qp->n, qp->x);
+    vMemcpy(qp->z_old, qp->n, qp->z);
+    vMemcpy(qp->w_old, qp->n, qp->w);
+    vMemcpy(qp->Qx_old, qp->n, qp->Qx);
+    vMemcpy(qp->Qw_old, qp->n, qp->Qw);
+    vMemcpy(qp->y_old, qp->m, qp->y);
+}
+
+void update_gamma(QP_struct *qp) {
+    int m = qp->m, n = qp->n;
+    mfloat const0;
+    if ((qp->gamma > 1.618) && (qp->iter >= qp->gamma_reset_start) && qp->gamma_test) {
+        mfloat tmp = pow(distance(qp->Qw, qp->Qw_old, qp->n), 2);
+        if ((qp->iter == qp->gamma_reset_start) || (qp->iter % 1000) == 0) {
+            const0 = max(1.0, qp->sigma*(1.0/qp->gamma* pow(norm2(qp->Rd, n), 2) + tmp) * 3);
+        }
+        if (((qp->sigma/qp->gamma*pow(norm2(qp->Rd, n),2) + qp->sigma*tmp) * (pow(qp->gamma,2)-qp->gamma-1.0)) > (const0/(pow(qp->iter, 1.2)))) {
+            qp->gamma = max(1.618, qp->gamma*0.97);
+            read_solution(qp);
+            sGSADMM_QP_compute_status(qp);
+        }
+    }
+}
+
 void update_sigma(QP_struct *QP_space) {
-//    if (primfeas < dualfeas)
-//        primWin++;
-//    else
-//        dualWin++;
-
+    bool use_inforg = false;
     int iter = QP_space->iter;
-
-//    mfloat factor = 5.0;
-    mfloat inf_primal = max(QP_space->inf_p, max(QP_space->inf_Q, QP_space->inf_C));
-    QP_space->sigma_old = QP_space->sigma;
-    if (iter % sGSADMM_sigma_update_iter(iter) == 0) {
-        if (inf_primal < 0.75*QP_space->inf_d) {
-            QP_space->sigma *= 1.25;
-        }
-        else if (inf_primal > 1.33*QP_space->inf_d) {
-            QP_space->sigma *= 0.8;
-        }
-
-        QP_space->sigma = min(QP_space->sigma, 1e5);
-        QP_space->sigma = max(QP_space->sigma, 1e-10);
+    if (min(QP_space->inf_p_org, QP_space->inf_d_org) < 50 * QP_space->sGSADMM_tol) {
+        use_inforg = true;
     }
-    if (abs(QP_space->sigma_old - QP_space->sigma) > 1e-11) {
-        sGSADMM_QP_refact_IQ(QP_space);
+    mfloat errPD, errP, errD;
+    if (use_inforg) {
+        errPD = max(QP_space->inf_Q_org, QP_space->inf_C_org);
+        errP = QP_space->inf_p_org;
+        errD = QP_space->inf_d_org;
+    } else {
+        errPD = max(QP_space->inf_Q, QP_space->inf_C);
+        errP = QP_space->inf_p;
+        errD = QP_space->inf_d;
     }
 
+    mfloat ratio = max(errP, 0.1*errPD) / errD;
+    if (ratio < 0.95)
+        QP_space->prim_win++;
+    else if (ratio > 1/0.95)
+        QP_space->dual_win++;
+
+
+//    mfloat inf_primal = max(QP_space->inf_p, max(QP_space->inf_Q, QP_space->inf_C));
+
+    if ((!QP_space->fix_sigma) && (iter % QP_space->sigma_update_iter == 1)) {
+        QP_space->sigma_old = QP_space->sigma;
+        if (QP_space->prim_win > QP_space->dual_win) {
+            // primal good, increase sigma
+            QP_space->sigma = min(QP_space->sigma_max, QP_space->sigma_old * QP_space->sigma_scale);
+            QP_space->sigma_change++;
+            QP_space->prim_win = 0;
+        } else if (QP_space->dual_win > QP_space->prim_win) {
+            // dual good, decrease sigma
+            QP_space->sigma = max(QP_space->sigma_min, QP_space->sigma_old / QP_space->sigma_scale);
+            QP_space->sigma_change++;
+            QP_space->dual_win = 0;
+        } else {
+            // no winner, keep sigma
+            QP_space->sigma = QP_space->sigma_old;
+        }
+
+        if (abs(QP_space->sigma_old - QP_space->sigma) > 1e-10) {
+            sGSADMM_QP_refact_IQ(QP_space);
+        }
+#ifdef sigma_debug
+        if (use_inforg)
+            printf("inf_p: %3.2e, inf_Q: %3.2e, inf_C: %3.2e, inf_d: %3.2e, sigma: %3.2e\n", QP_space->inf_p_org, QP_space->inf_Q_org, QP_space->inf_C_org, QP_space->inf_d_org, QP_space->sigma);
+        else
+            printf("inf_p: %3.2e, inf_Q: %3.2e, inf_C: %3.2e, inf_d: %3.2e, sigma: %3.2e\n", QP_space->inf_p, QP_space->inf_Q, QP_space->inf_C, QP_space->inf_d, QP_space->sigma);
+#endif
+    }
 }
 
 void update_sigma_pALM(QP_struct* QP_space) {
@@ -1633,7 +1979,7 @@ void update_sigma_pALM(QP_struct* QP_space) {
     QP_space->sigma_old = QP_space->sigma;
     if (iter % 1 == 0) {
         if (inf_primal < 0.75*QP_space->inf_d) {
-            QP_space->sigma *= 1.25;
+            QP_space->sigma *= 2.2;
         }
         else if (inf_primal > 1.33*QP_space->inf_d) {
             QP_space->sigma *= 0.8;
@@ -1701,6 +2047,9 @@ void preprocessing(QP_struct *qp) {
     xdoty(qp->l, qp->cA, qp->l, qp->n, false);
     xdoty(qp->u, qp->cA, qp->u, qp->n, false);
 
+
+    qp->normb = norm2(qp->b, qp->m);
+    qp->normc = norm2(qp->c, qp->n);
     for (int r = 0; r < qp->n; ++r) {
         for (int j = qp->Q.rowStart[r]; j < qp->Q.rowStart[r+1]; ++j) {
             qp->Q.value[j] *= qp->cA[r];
@@ -1708,8 +2057,9 @@ void preprocessing(QP_struct *qp) {
         }
     }
 
-    mfloat bscale = max(1.0, qp->normborg);
-    mfloat cscale = max(1.0, qp->normcorg);
+    qp->bscale = max(1.0, qp->normborg);
+    qp->cscale = max(1.0, qp->normcorg);
+    cout << qp->bscale * qp->cscale << endl;
     mfloat invbscale = 1/max(1.0, qp->normborg);
     mfloat invcscale = 1/max(1.0, qp->normcorg);
 
@@ -1718,7 +2068,7 @@ void preprocessing(QP_struct *qp) {
     ax(invbscale, qp->l, qp->l, qp->n);
     ax(invbscale, qp->u, qp->u, qp->n);
 
-    mfloat bcratio = bscale / cscale;
+    mfloat bcratio = qp->bscale / qp->cscale;
     for (int r = 0; r < qp->n; ++r) {
         for (int j = qp->Q.rowStart[r]; j < qp->Q.rowStart[r+1]; ++j) {
             qp->Q.value[j] *= bcratio;
@@ -1865,6 +2215,7 @@ void Eigen_init(QP_struct *QP_space) {
     QP_space->Eigen_result_y.resize(QP_space->m, 1);
 //    cout << EigenA << endl;
 //    cout << EigenAAT << endl;
+    cout << QP_space->Q.value[0] << endl;
     QP_space->EigenQ = get_eigen_spMat(QP_space->Q);
     QP_space->EigenI.resize(QP_space->n, QP_space->n);
     QP_space->EigenI.setIdentity();

@@ -88,9 +88,11 @@ typedef struct {
 } PARDISO_var;
 
 typedef struct input_parameters {
-    int max_ADMM_iter = -1;
-    int max_ALM_iter = -1;
-    mfloat sigma = -1;
+    int max_ADMM_iter = 100;
+    int max_ALM_iter = 10;
+    mfloat sigma = 1.0;
+    double kappa = 1.0;
+    mfloat gamma = 1.618;
 } input_parameters;
 
 typedef struct output_parameters {
@@ -146,6 +148,42 @@ typedef struct QP_struct {
     double normcorg;
     double *cA;
     double *rA;
+    double normb;
+    double normc;
+    double *xorg;
+    double bscale;
+    double cscale;
+    double *zorg;
+    double *Rp_org;
+    double inf_p_org;
+    double *Rd_org;
+    double inf_d_org;
+    double *Qx_org;
+    double *Qw_org;
+    double *RQ_org;
+    double inf_Q_org;
+    double *dzorg;
+    double *RCorg;
+    double inf_C_org;
+    double primal_obj_org;
+    double dual_obj_org;
+    double inf_g_org;
+    int gamma_reset_start = 200;
+    bool gamma_test = true;
+    mfloat *Qw_old;
+    mfloat *Qx_old;
+    mfloat *z_old;
+    mfloat *x_old;
+    int prim_win = 0;
+    int dual_win = 0;
+    bool fix_sigma = false;
+    mfloat sigma_max = 5e6;
+    mfloat sigma_min = 1e-3;
+    double sigma_scale = 1.35;
+    int sigma_change = 0;
+    int rescale = 1;
+    int sigma_update_iter = 50;
+    double *temp_z;
 } QP_struct;
 
 void Eigen_init(QP_struct *QP_space);
@@ -155,6 +193,12 @@ void simple_ruiz_test();
 void QP_solve(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat* l, mfloat* u, int m, int n, input_parameters para, output_parameters *para_out);
 
 void sGSADMM_QP(QP_struct *QP_space);
+
+void rescaling(QP_struct *qp);
+void rescalingADMM(QP_struct *qp);
+
+void save_solution(QP_struct *qp);
+void read_solution(QP_struct *qp);
 
 void sGSADMM_QP_init(QP_struct *QP_space);
 
@@ -173,6 +217,8 @@ void sGSADMM_QP_update_z(QP_struct *QP_space);
 void sGSADMM_QP_update_x(QP_struct *QP_space);
 
 void sGSADMM_QP_compute_status(QP_struct *QP_space);
+
+void pALM_QP_compute_status(QP_struct *QP_space);
 
 void sGSADMM_QP_print_status(QP_struct* QP_space);
 
@@ -375,6 +421,9 @@ bool check_termination_SSN();
 void update_sigma(QP_struct *QP_space);
 void update_sigma_pALM(QP_struct* QP_space);
 
+/// update gamma
+void update_gamma(QP_struct *qp);
+
 /// print sparse matrix
 void print_spM(sparseRowMatrix input);
 
@@ -411,3 +460,5 @@ int PARDISO_solve(PARDISO_var *PDS, mfloat *rhs);
 
 int PARDISO_release(PARDISO_var *PDS);
 #endif //C_CODE_ALGORITHM_H
+
+void solve_grb();
