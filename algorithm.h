@@ -35,7 +35,12 @@
 typedef struct {
     bool isEmpty;
     Eigen::SimplicialLLT<Eigen::SparseMatrix<mfloat>> LLTsolver;
-} linearSolver;
+} linear_solver_chol;
+
+typedef struct {
+    bool isEmpty;
+    Eigen::SparseLU<Eigen::SparseMatrix<mfloat>> LUsolver;
+} linear_solver_lu;
 
 typedef struct {
     int nRow;
@@ -62,7 +67,7 @@ typedef struct BiCG_struct{
     mfloat *x,*r,*p,*Ap, *v, *r0, *p_hat, *s, *s_hat, *t, *x0, *Qx, *ATy;
     int dim_n, max_iter = 500, nCGs, dim_m;
     mfloat tol = 1e-6, cgTime, error;
-    linearSolver LLT;
+//    linearSolver LLT;
     mfloat *BiCG_prod_temp1, *BiCG_prod_temp2;
 
 } BiCG_struct;
@@ -71,7 +76,7 @@ typedef struct {
     mfloat *x,*r,*z,*p,*Ap,*Atp;
     int dim_n, dim_d, max_iter, nCGs;
     mfloat tol, cgTime;
-    linearSolver LLT;
+    linear_solver_chol LLT;
 } CG_struct;
 
 typedef struct {
@@ -128,16 +133,17 @@ typedef struct QP_struct {
     mfloat *w0, *y0;
     mfloat normQ, kappa, SSN_tol;
     mfloat *SSN_grad_Q, *SSN_compute_obj_temp1, *SSN_grad, *SSN_dwdy;
-    mfloat sGSADMM_tol, pALM_tol = 1e-6;
+    mfloat sGSADMM_tol = 1e-4, pALM_tol = 1e-6, stop_tol = 1e-6;
     bool sGSADMM_finish;
     bool pALM_finish = false;
 
     input_parameters input_para;
-    Eigen::SparseMatrix<mfloat> EigenI, EigenQ, EigenIQ;
+    Eigen::SparseMatrix<mfloat> EigenIn, EigenIm, EigenQ, EigenIQ;
     Eigen::SparseMatrix<mfloat> upperMatQ;
-    linearSolver Eigen_linear_AAT, Eigen_linear_IQ;
+    linear_solver_chol Eigen_linear_AAT, Eigen_linear_IQ;
+    linear_solver_lu Eigen_linear_hessian_full_idx;
     int iter, maxADMMiter, maxALMiter;
-    Eigen::VectorX<mfloat> Eigen_rhs_w, Eigen_rhs_y, Eigen_result_w, Eigen_result_y;
+    Eigen::VectorX<mfloat> Eigen_rhs_w, Eigen_rhs_y, Eigen_rhs_dwdy, Eigen_result_w, Eigen_result_y, Eigen_result_dwdy;
     bool *proj_idx;
     spVec_int U_idx;
     std::chrono::steady_clock::time_point time_solve_start;
@@ -184,6 +190,27 @@ typedef struct QP_struct {
     int rescale = 1;
     int sigma_update_iter = 50;
     double *temp_z;
+    bool use_inforg = false;
+    int max_iter_SSN = 100;
+    double dwQdw;
+    double x_diff_norm;
+    double y_diff_norm;
+    int precond = 0;
+    mfloat *dQdA;
+    mfloat *diag_AAT;
+    mfloat *diag_Q;
+    mfloat const0;
+    /// 0: bicgstab; 1: chol;
+    int SSN_method = 1;
+    Eigen::SparseMatrix<double> EigenA;
+    Eigen::SparseMatrix<double> EigenAT;
+    Eigen::SparseMatrix<double> EigenAAT;
+    Eigen::SparseMatrix<double> AQ;
+    bool first_full_idx = true;
+    Eigen::SparseMatrix<double> hessian_1;
+    Eigen::SparseMatrix<double> hessian_4;
+    Eigen::SparseMatrix<double> hessian_full_idx;
+    double *SSN_grad_invsigma;
 } QP_struct;
 
 void Eigen_init(QP_struct *QP_space);
@@ -428,13 +455,13 @@ void update_gamma(QP_struct *qp);
 void print_spM(sparseRowMatrix input);
 
 /// create eigen sparse matrix
-Eigen::SparseMatrix<mfloat> get_eigen_spMat(sparseRowMatrix BT);
+Eigen::SparseMatrix<mfloat> get_eigen_spMat(sparseRowMatrix B);
 
 /// compute the L^{-1} * r;
 void precond_CG(CG_struct* CG_space);
 
 /// compute the L^{-1} * r;
-void precond_BiCG(const mfloat* input, mfloat* output, BiCG_struct* CG_space);
+void precond_BiCG(const mfloat* input, mfloat* output, QP_struct *qp);
 
 /// initialize Eigen variable for cholesky.
 void initial_Eigen();
@@ -452,6 +479,8 @@ void Runexperiment_xTy();
 
 void writeCOO();
 
+void run_bin();
+
 int PARDISO_init(PARDISO_var *PDS, sparseRowMatrix A);
 
 int PARDISO_numerical_fact(PARDISO_var *PDS);
@@ -460,5 +489,9 @@ int PARDISO_solve(PARDISO_var *PDS, mfloat *rhs);
 
 int PARDISO_release(PARDISO_var *PDS);
 #endif //C_CODE_ALGORITHM_H
+
+Eigen::SparseMatrix<mfloat> concat_4_spMat(Eigen::SparseMatrix<mfloat> A, Eigen::SparseMatrix<mfloat> B, Eigen::SparseMatrix<mfloat> C, Eigen::SparseMatrix<mfloat> D);
+
+void test_concat_4_spMat();
 
 void solve_grb();
