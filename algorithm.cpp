@@ -375,18 +375,18 @@ sparseRowMatrix get_BT(sparseRowMatrix BT) {
 //        rowStart[i] = rowStart[i+1];
 }
 
-void spMV_R(sparseRowMatrix A, const mfloat* x, int m, int n, mfloat* Ax) {
+void spMV_R(sparseRowMatrix A, const mfloat* x, int nRow, int nCol, mfloat* Ax) {
     mfloat* value = A.value;
     int* rowStart = A.rowStart;
     int* column = A.column;
-    assert(A.nCol == n);
-    for (int i = 0; i < m; ++i) {
-        mfloat temp = 0;
+    assert(A.nCol == nCol);
+#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) shared(nRow, Ax, rowStart, value, x, column, nCol) default(none)
+    for (int i = 0; i < nRow; ++i) {
+        Ax[i] = 0;
         for (int j = rowStart[i]; j < rowStart[i+1]; ++j) {
-            assert(column[j] < n);
-            temp += value[j]*x[column[j]];
+            assert(column[j] < nCol);
+            Ax[i] += value[j]*x[column[j]];
         }
-        Ax[i] = temp;
     }
 }
 
@@ -684,7 +684,7 @@ void sGSADMM_QP(QP_struct *QP_space) {
 
         // old iterates
         if (QP_space->gamma_test) {
-            vMemcpy(QP_space->Qw, QP_space->n, QP_space->Qw_old);
+            save_solution(QP_space);
         }
 
         sGSADMM_QP_update_y_first(QP_space);
@@ -716,9 +716,13 @@ void sGSADMM_QP(QP_struct *QP_space) {
 
 void sGSADMM_QP_init(QP_struct *QP_space) {
     int n = QP_space->n, m = QP_space->m;
+    QP_space->line_search_temp1 = new mfloat [n];
+    QP_space->line_search_temp2 = new mfloat [m];
     QP_space->w = new mfloat [n];
     QP_space->w_bar = new mfloat [n];
+    QP_space->w_diff = new mfloat [n];
     QP_space->y = new mfloat [m];
+    QP_space->y_diff = new mfloat [m];
     QP_space->y_bar = new mfloat [m];
     QP_space->z = new mfloat [n];
     QP_space->temp_z = new mfloat [n];
@@ -726,6 +730,7 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
     QP_space->zorg = new mfloat [n];
     QP_space->z_new = new mfloat [n];
     QP_space->x = new mfloat [n];
+    QP_space->x0 = new mfloat [n];
     QP_space->x_old = new mfloat [n];
     QP_space->xorg = new mfloat [n];
     QP_space->y_old = new mfloat [n];
@@ -733,10 +738,13 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
     QP_space->y0 = new mfloat [n];
     QP_space->w0 = new mfloat [n];
     QP_space->dQdA = new mfloat [m+n];
+    QP_space->Qw = new mfloat [n];
+    QP_space->Qw0 = new mfloat [n];
     for (int i = 0; i < n; ++i) {
         QP_space->w[i] = 0; QP_space->z[i] = 0; QP_space->x[i] = 0;
-        QP_space->w_old[i] = 0;
-        QP_space->w0[i] = 0;
+        QP_space->w_old[i] = 0; QP_space->z_old[i] = 0; QP_space->x_old[i] = 0;
+        QP_space->w0[i] = 0; QP_space->x0[i] = 0; QP_space->z_old[i] = 0;
+        QP_space->Qw0[i] = 0;
     }
     for (int i = 0; i < m; ++i) {
         QP_space->y[i] = 0;
@@ -746,7 +754,7 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
     QP_space->gamma = QP_space->input_para.gamma;
 //    QP_space->sigma = 1.0;
     QP_space->update_y_rhs = new mfloat [m];
-    QP_space->Qw = new mfloat [n];
+    QP_space->Qw_diff = new mfloat [n];
     QP_space->Qw_org = new mfloat [n];
     QP_space->Qw_old = new mfloat [n];
     QP_space->Qx = new mfloat [n];
@@ -759,10 +767,14 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
     spMV_R(QP_space->Q, QP_space->w, n, n, QP_space->Qw);
     spMV_R(QP_space->Q, QP_space->x, n, n, QP_space->Qx);
     QP_space->ATy = new mfloat [n];
+    QP_space->ATy0 = new mfloat [n];
+    QP_space->ATdy = new mfloat [n];
     QP_space->Ax = new mfloat [m];
     QP_space->Rd = new mfloat [n];
+    QP_space->Rd_sub = new mfloat [n];
     QP_space->Rd_org = new mfloat [n];
     QP_space->Rp = new mfloat [m];
+    QP_space->Rp_sub = new mfloat [m];
     QP_space->Rp_org = new mfloat [m];
     QP_space->z_Qw_c = new mfloat [n];
     QP_space->A_times_z_Qw_c = new mfloat [m];
@@ -1436,6 +1448,7 @@ void pALM_SSN_QP(QP_struct* QP_space) {
     QP_space->iter = 1;
 
     // pALM
+
     pALM_QP_compute_status(QP_space);
     pALM_QP_print_status(QP_space);
     while ((QP_space->iter < QP_space->maxALMiter) && (!QP_space->pALM_finish) ) {
@@ -1444,6 +1457,11 @@ void pALM_SSN_QP(QP_struct* QP_space) {
         int SSNiter = 1;
         mfloat tau_sigma = QP_space->tau/QP_space->sigma;
 
+        vMemcpy(QP_space->y, m, QP_space->y_old);
+        vMemcpy(QP_space->w, n, QP_space->w_old);
+        vMemcpy(QP_space->x, n, QP_space->x_old);
+//        vMemcpy(QP_space->z, m, QP_space->z0);
+        vMemcpy(QP_space->Qw, n, QP_space->Qw_old);
 
         mfloat normGrad;
         SSN_findStep_update_variables(QP_space);
@@ -1453,15 +1471,19 @@ void pALM_SSN_QP(QP_struct* QP_space) {
             SSN_compute_grad(QP_space);
             normGrad = norm2(QP_space->SSN_grad, m+n);
 //            cout << "normGrad = " << normGrad << endl;
-            mfloat obj_old = SSN_obj_val(QP_space);
-            mfloat primal_infeas_sub = norm2(QP_space->SSN_grad+n, m)/(1+QP_space->normb);
-            mfloat dual_infeas_sub = norm2(QP_space->Rd, n)/(1+QP_space->normc);
+            QP_space->obj_old = SSN_obj_val(QP_space);
+            spMV_R(QP_space->A, QP_space->x, m, n, QP_space->Ax);
+            axpy(-1, QP_space->Ax, QP_space->b, QP_space->Rp_sub, m);
+
+            axpy(1, QP_space->temp_z, QP_space->z, QP_space->Rd_sub, n);
+            mfloat primal_infeas_sub = norm2(QP_space->Rp_sub, m)/(1+QP_space->normb);
+            mfloat dual_infeas_sub = norm2(QP_space->Rd_sub, n)/(1+QP_space->normc);
 
             QP_space->SSN_tol = max(QP_space->stop_tol, min(1e-3, 10*QP_space->tau/QP_space->sigma*sqrt(QP_space->x_diff_norm+QP_space->y_diff_norm+QP_space->dwQdw)));
 //            BiCG_space->tol = min(eta, pow(norm2(QP_space->SSN_grad, m+n), 1+v));
 //            BiCG_space->tol /= max(QP_space->normQ, 1.0);
 
-            printf("        %3d| L=%- 7.6e| etapsub=%2.1e etadsub=%2.1e| normgrad=%2.1e tolSSN=%2.1e|\n",     SSNiter, obj_old, primal_infeas_sub, dual_infeas_sub, normGrad, QP_space->SSN_tol);
+            printf("        %3d| L=%- 7.6e| etapsub=%2.1e etadsub=%2.1e| normgrad=%2.1e tolSSN=%2.1e|",     SSNiter, QP_space->obj_old, primal_infeas_sub, dual_infeas_sub, normGrad, QP_space->SSN_tol);
 //            BiCG_space->tol = 1e-6;
 
             if (normGrad < QP_space->SSN_tol) {
@@ -1506,6 +1528,8 @@ void pALM_SSN_QP(QP_struct* QP_space) {
                         QP_space->Eigen_linear_hessian_full_idx.LUsolver.analyzePattern(QP_space->hessian_full_idx);
                         QP_space->Eigen_linear_hessian_full_idx.LUsolver.factorize(QP_space->hessian_full_idx);
                     } else {
+
+                        // can be improved
                         QP_space->hessian_1 = -(1+QP_space->tau/QP_space->sigma)/QP_space->sigma*QP_space->EigenIn-QP_space->EigenQ;
                         QP_space->hessian_4 = -QP_space->tau/QP_space->sigma/QP_space->sigma*QP_space->EigenIm - QP_space->EigenAAT;
                         QP_space->hessian_full_idx = concat_4_spMat(QP_space->hessian_1, QP_space->EigenAT, QP_space->AQ, QP_space->hessian_4);
@@ -1527,24 +1551,26 @@ void pALM_SSN_QP(QP_struct* QP_space) {
 
 
 //        SSN_compute_grad(QP_space);
-            mfloat temp_rhs = rho * xTy(QP_space->SSN_grad_Q, QP_space->SSN_dwdy, m+n);
+//            mfloat temp_rhs = rho * xTy(QP_space->SSN_grad_Q, QP_space->SSN_dwdy, m+n);
+//
+//
+//            for (i = 0; i < findStep_maxiter; ++i) {
+//                pow_delta = pow(delta, i);
+//                axpy(pow_delta, QP_space->SSN_dwdy, QP_space->w_old, QP_space->w, n);
+//                axpy(pow_delta, QP_space->SSN_dwdy+n, QP_space->y_old, QP_space->y, m);
+//                SSN_findStep_update_variables(QP_space);
+//                findStep_LHS = SSN_obj_val(QP_space);
+//                findStep_RHS = obj_old + pow_delta * temp_rhs;
+//                if (findStep_LHS <= findStep_RHS) break;
+//            }
+//            QP_space->step_size = pow_delta;
+//#ifdef SSN_debug
+//            cout << "     step size " << pow_delta << " normGrad " << normGrad << endl;
+//#endif
+            line_search(QP_space);
 
-
-            for (i = 0; i < findStep_maxiter; ++i) {
-                pow_delta = pow(delta, i);
-                axpy(pow_delta, QP_space->SSN_dwdy, QP_space->w_old, QP_space->w, n);
-                axpy(pow_delta, QP_space->SSN_dwdy+n, QP_space->y_old, QP_space->y, m);
-                SSN_findStep_update_variables(QP_space);
-                findStep_LHS = SSN_obj_val(QP_space);
-                findStep_RHS = obj_old + pow_delta * temp_rhs;
-                if (findStep_LHS <= findStep_RHS) break;
-            }
-            QP_space->step_size = pow_delta;
-#ifdef SSN_debug
-            cout << "     step size " << pow_delta << " normGrad " << normGrad << endl;
-#endif
-            vMemcpy(QP_space->y, m, QP_space->y_old);
-            vMemcpy(QP_space->w, n, QP_space->w_old);
+//            vMemcpy(QP_space->y, m, QP_space->y_old);
+//            vMemcpy(QP_space->w, n, QP_space->w_old);
 
 //            if (i > 0)
 //                cout << "find step iteration " << i << endl;
@@ -1554,13 +1580,11 @@ void pALM_SSN_QP(QP_struct* QP_space) {
             SSNiter++;
         }
 
-        vMemcpy(QP_space->y, m, QP_space->y0);
-        vMemcpy(QP_space->w, n, QP_space->w0);
 //        if ((QP_space->iter % sGSADMM_sigma_update_iter(QP_space->iter) == 0) || (QP_space->iter % sGSADMM_print_iter(QP_space->iter) == 0))
-        pALM_update_variables(QP_space);
+//        pALM_update_variables(QP_space);
         pALM_QP_compute_status(QP_space);
         update_sigma_pALM(QP_space);
-        QP_space->SSN_tol = 0.1*QP_space->inf_p;
+//        QP_space->SSN_tol = 0.1*QP_space->inf_p;
         //        update_sigma(QP_space);
         QP_space->iter++;
         pALM_QP_print_status(QP_space);
@@ -1626,15 +1650,111 @@ void Taylor_test(BiCG_struct* BiCG_space, QP_struct* QP_space) {
 
 }
 
+void line_search(QP_struct* qp) {
+    int m = qp->m, n = qp->n;
+    mfloat *dw = qp->SSN_dwdy, *dy = qp->SSN_dwdy+n;
+    spMV_R(qp->Q, dw, n, n, qp->Qdw);
+    spMV_R(qp->AT, dy, n, m, qp->ATdy);
+
+    mfloat g0 = -xTy(qp->Qdw, qp->SSN_grad, n);
+    g0 -= xTy(dy, qp->SSN_grad+n, m);
+
+    if (g0 < 0) {
+        printf("need descent direction\n");
+        ax(-1, qp->SSN_grad, dw, n);
+        spMV_R(qp->Q, dw, n, n, qp->Qdw);
+        ax(-1, qp->SSN_grad+n, dy, m);
+        spMV_R(qp->AT, dy, n, m, qp->ATdy);
+    }
+
+
+    mfloat c1 = 1e-4, c2 = 0.9;
+    mfloat tau_sigma = qp->tau/qp->sigma, sigma = qp->sigma;
+    spMV_R(qp->AT, qp->y_old, qp->n, qp->m, qp->ATy0);
+
+    /// Armijo rule
+    mfloat alpha = 1.0, alpha_const = 0.5, LB = 0, UB = 1;
+    mfloat g_LB, g_UB;
+    int iter;
+    for (iter = 1; iter <= 40; ++iter) {
+        if (iter == 1) {
+            alpha = 1.0;
+            LB = 0; UB = 1;
+        } else
+            alpha = alpha_const*(LB+UB);
+
+        axpy(alpha, dw, qp->w_old, qp->w, n);
+        axpy(alpha, qp->Qdw, qp->Qw_old, qp->Qw, n);
+        axpby(-1, qp->Qw, -1, qp->c, qp->temp_z, n);
+
+        axpy(alpha, dy, qp->y_old, qp->y, m);
+        axpy(alpha, qp->ATdy, qp->ATy0, qp->ATy, n);
+        axpy(1, qp->ATy, qp->temp_z, qp->temp_z, n);
+
+        axpy(sigma, qp->temp_z, qp->x_old, qp->pALM_z_unProjected, n);
+        proj(qp->pALM_z_unProjected, qp->x, n, qp->l, qp->u, qp->proj_idx);
+
+        axpby(1/sigma, qp->x, -1/sigma, qp->pALM_z_unProjected, qp->z, n);
+
+        // compute obj
+        axpy(-1, qp->w_old, qp->w, qp->w_diff, n);
+        axpy(-1, qp->Qw_old, qp->Qw, qp->Qw_diff, n);
+        axpy(tau_sigma, qp->w_diff, qp->w, qp->line_search_temp1, n);
+        axpy(-1, qp->x, qp->line_search_temp1, qp->line_search_temp1, n);
+        mfloat g_alpha = -xTy(qp->Qdw, qp->line_search_temp1, n);
+        mfloat LQ = -0.5*xTy(qp->w, qp->Qdw, n) - xTy(qp->x, qp->temp_z, n) + 0.5/sigma*pow(distance(qp->x, qp->x_old, n), 2)
+                - 0.5*tau_sigma*xTy(qp->w_diff, qp->Qw_diff, n);
+
+        axpy(-1, qp->y_old, qp->y, qp->y_diff, m);
+        axpy(-tau_sigma, qp->y_diff, qp->b, qp->line_search_temp2, m);
+        g_alpha += xTy(dy, qp->line_search_temp2, m) - xTy(qp->x, qp->ATdy, n);
+        LQ += xTy(qp->b, qp->y, m) - 0.5*tau_sigma*xTy(qp->y_diff, qp->y_diff, m);
+
+        if (iter == 1) {
+            g_LB = g0;
+            g_UB = g_alpha;
+            if (g_LB*g_UB > 0) break;
+        }
+
+        if ((abs(g_alpha) < c2*abs(g0)) &&
+        (LQ - qp->obj_old - c1*alpha*g0 > -1e-12/max(1.0, abs(qp->obj_old))))
+            break;
+
+        if (g_alpha*g_UB < 0) {
+            LB = alpha;
+            g_LB = g_alpha;
+        } else if (g_alpha*g_LB < 0) {
+            UB = alpha;
+            g_UB = g_alpha;
+        }
+    }
+
+    printf(" [step = %2.1e iter = %2d]\n", alpha, iter);
+
+    int nnz = 0;
+    int *p = qp->U_idx.vec;
+    for (int i = 0; i < n; ++i) {
+        if (qp->proj_idx[i]) {
+            p[nnz] = i;
+            nnz++;
+        }
+    }
+    qp->U_idx.number = nnz;
+}
+
 void SSN_findStep_update_variables(QP_struct* QP_space) {
     int m = QP_space->m, n = QP_space->n;
-    spMV_R(QP_space->Q, QP_space->w, n, n, QP_space->Qw);
-    spMV_R(QP_space->AT, QP_space->y, n, m, QP_space->ATy);
-    axpy(-1, QP_space->ATy, QP_space->Qw, QP_space->Qw_ATy_c, n);
-    axpy(1, QP_space->c, QP_space->Qw_ATy_c, QP_space->Qw_ATy_c, n);
+//    spMV_R(QP_space->Q, QP_space->w, n, n, QP_space->Qw);
+//    spMV_R(QP_space->AT, QP_space->y, n, m, QP_space->ATy);
+//    axpy(-1, QP_space->ATy, QP_space->Qw, QP_space->Qw_ATy_c, n);
+//    axpy(1, QP_space->c, QP_space->Qw_ATy_c, QP_space->Qw_ATy_c, n);
+//
+//    axpy(-QP_space->sigma, QP_space->Qw_ATy_c, QP_space->x, QP_space->pALM_z_unProjected, n);
+    axpy(-1, QP_space->z, QP_space->Rd, QP_space->temp_z, n);
+    axpy(QP_space->sigma, QP_space->temp_z, QP_space->x_old, QP_space->pALM_z_unProjected, n);
 
-    axpy(-QP_space->sigma, QP_space->Qw_ATy_c, QP_space->x, QP_space->pALM_z_unProjected, n);
-    proj(QP_space->pALM_z_unProjected, QP_space->pALM_z_projected, n, QP_space->l, QP_space->u, QP_space->proj_idx);
+    // maybe not exactly x, just somewhere to store.
+    proj(QP_space->pALM_z_unProjected, QP_space->x, n, QP_space->l, QP_space->u, QP_space->proj_idx);
 
     int nnz = 0;
     int *p = QP_space->U_idx.vec;
@@ -1657,21 +1777,23 @@ void pALM_update_variables(QP_struct* QP_space) {
 mfloat SSN_obj_val(QP_struct* QP_space) {
     mfloat res = 0;
     int m = QP_space->m, n = QP_space->n;
-    res -= xTy(QP_space->Qw_ATy_c, QP_space->pALM_z_projected, n);
+    res -= xTy(QP_space->temp_z, QP_space->x, n);
 
 
-    QP_space->x_diff_norm = pow(distance(QP_space->x, QP_space->pALM_z_projected, n), 2);
+    QP_space->x_diff_norm = pow(distance(QP_space->x, QP_space->x_old, n), 2);
 //    axpy(-1, QP_space->x, QP_space->pALM_z_projected, QP_space->SSN_compute_obj_temp1, n);
 //    QP_space->x_diff_norm = xTy(QP_space->SSN_compute_obj_temp1, QP_space->SSN_compute_obj_temp1, n);
     res -= 1/(2*QP_space->sigma)* QP_space->x_diff_norm;
     res += 1.0/2*xTy(QP_space->w, QP_space->Qw, n);
     res -= xTy(QP_space->b, QP_space->y, m);
 
-    axpy(-1, QP_space->w0, QP_space->w, QP_space->dw, n);
-    spMV_R(QP_space->Q, QP_space->dw, n, n, QP_space->Qdw);
+    axpy(-1, QP_space->w_old, QP_space->w, QP_space->w_diff, n);
+//    spMV_R(QP_space->Q, QP_space->w_diff, n, n, QP_space->Qdw);
 
-    QP_space->dwQdw = xTy(QP_space->dw, QP_space->Qdw, n);
-    QP_space->y_diff_norm = pow(distance(QP_space->y, QP_space->y0, m), 2);
+//    QP_space->dwQdw = xTy(QP_space->w_diff, QP_space->Qdw, n);
+    axpy(-1, QP_space->Qw_old, QP_space->Qw, QP_space->Qw_diff, n);
+    QP_space->dwQdw = xTy(QP_space->w_diff, QP_space->Qw_diff, n);
+    QP_space->y_diff_norm = pow(distance(QP_space->y, QP_space->y_old, m), 2);
     res += QP_space->tau/(2*QP_space->sigma) * (QP_space->dwQdw + QP_space->y_diff_norm);
 
     return res;
@@ -1680,15 +1802,15 @@ mfloat SSN_obj_val(QP_struct* QP_space) {
 void SSN_compute_grad(QP_struct* QP_space) {
     int m = QP_space->m, n = QP_space->n;
     mfloat tau = QP_space->tau, sigma = QP_space->sigma;
-    axpby(-1, QP_space->pALM_z_projected, 1+tau/sigma, QP_space->w, QP_space->SSN_grad, n);
-    axpy(-tau/sigma, QP_space->w0, QP_space->SSN_grad, QP_space->SSN_grad, n);
+    axpby(-1, QP_space->x, 1+tau/sigma, QP_space->w, QP_space->SSN_grad, n);
+    axpy(-tau/sigma, QP_space->w_old, QP_space->SSN_grad, QP_space->SSN_grad, n);
     spMV_R(QP_space->Q, QP_space->SSN_grad, n, n, QP_space->SSN_grad_Q);
 
 
-    spMV_R(QP_space->A, QP_space->pALM_z_projected, m, n, QP_space->Az);
+    spMV_R(QP_space->A, QP_space->x, m, n, QP_space->Az);
     axpy(-1, QP_space->b, QP_space->Az, QP_space->SSN_grad+n, m);
     axpy(tau/sigma, QP_space->y, QP_space->SSN_grad+n, QP_space->SSN_grad+n, m);
-    axpy(-tau/sigma, QP_space->y0, QP_space->SSN_grad+n, QP_space->SSN_grad+n, m);
+    axpy(-tau/sigma, QP_space->y_old, QP_space->SSN_grad+n, QP_space->SSN_grad+n, m);
     vMemcpy(QP_space->SSN_grad+n, m, QP_space->SSN_grad_Q+n);
 //    ax(-1, QP_space->SSN_grad, QP_space->SSN_grad,)
 }

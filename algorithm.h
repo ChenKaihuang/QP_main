@@ -211,6 +211,19 @@ typedef struct QP_struct {
     Eigen::SparseMatrix<double> hessian_4;
     Eigen::SparseMatrix<double> hessian_full_idx;
     double *SSN_grad_invsigma;
+    double *ATy0;
+    double *ATdy;
+    double *z_temp;
+    double *x0;
+    double *w_diff;
+    double *Qw0;
+    mfloat *Qw_diff;
+    double *line_search_temp1;
+    double *y_diff;
+    double *line_search_temp2;
+    double obj_old;
+    double *Rp_sub;
+    double *Rd_sub;
 } QP_struct;
 
 void Eigen_init(QP_struct *QP_space);
@@ -480,6 +493,8 @@ void Runexperiment_xTy();
 void writeCOO();
 
 void run_bin();
+
+void line_search(QP_struct *qp);
 
 int PARDISO_init(PARDISO_var *PDS, sparseRowMatrix A);
 
