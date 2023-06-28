@@ -63,6 +63,19 @@ typedef struct {
     int* column;
 } sparseRowMatrix;
 
+typedef struct {
+    int row;
+    int col;
+    mfloat value;
+} sparseMatrixElement;
+
+typedef struct {
+    int nRow;
+    int nCol;
+    int nElements;
+    sparseMatrixElement* elements;
+} sparseMatrixCOO;
+
 typedef struct BiCG_struct{
     mfloat *x,*r,*p,*Ap, *v, *r0, *p_hat, *s, *s_hat, *t, *x0, *Qx, *ATy;
     int dim_n, max_iter = 500, nCGs, dim_m;
@@ -130,7 +143,6 @@ typedef struct QP_struct {
     mfloat inf_p, inf_d, inf_Q, inf_C, inf_g, primal_obj, dual_obj, infty_z;
     mfloat *RQ, *RC;
     mfloat *dw, *w_old, *Qdw;
-    mfloat *w0, *y0;
     mfloat normQ, kappa, SSN_tol;
     mfloat *SSN_grad_Q, *SSN_compute_obj_temp1, *SSN_grad, *SSN_dwdy;
     mfloat sGSADMM_tol = 1e-4, pALM_tol = 1e-6, stop_tol = 1e-6;
@@ -207,6 +219,7 @@ typedef struct QP_struct {
     Eigen::SparseMatrix<double> EigenAAT;
     Eigen::SparseMatrix<double> AQ;
     bool first_full_idx = true;
+    Eigen::VectorXd diag_modifier;
     Eigen::SparseMatrix<double> hessian_1;
     Eigen::SparseMatrix<double> hessian_4;
     Eigen::SparseMatrix<double> hessian_full_idx;
@@ -216,7 +229,6 @@ typedef struct QP_struct {
     double *z_temp;
     double *x0;
     double *w_diff;
-    double *Qw0;
     mfloat *Qw_diff;
     double *line_search_temp1;
     double *y_diff;
@@ -224,10 +236,29 @@ typedef struct QP_struct {
     double obj_old;
     double *Rp_sub;
     double *Rd_sub;
+    mfloat *w_new, *y_new, *Qw_new;
+    std::vector<Eigen::Triplet<mfloat>> tripletList_Qsub;
+//    sparseMatrixCOO Q_coo, Q_coo_sub;
+//    int *Q_sub_counter;
+
+    Eigen::SparseMatrix<mfloat> Eigen_Q_sub;
+    bool *zero_idx;
+    double *SSN_rhs;
+    Eigen::SparseMatrix<double> Eigen_A_sub;
+    int *proj_idx_sum;
+    double *SSN_sub_case1_temp1;
+    double *SSN_sub_case1_temp2;
+    double *SSN_sub_case1_temp3;
+    double *SSN_r1_new;
+    int max_iter_step = 40;
+    int iter_step;
+    double *normGrad_list;
+    std::vector<mfloat> inf;
+    double case1_time = 0.0;
 } QP_struct;
 
 void Eigen_init(QP_struct *QP_space);
-
+void partial_axpby(const mfloat a, const mfloat* x, mfloat b, const mfloat* y, mfloat* z, const int len, bool *idx);
 void simple_ruiz_test();
 
 void QP_solve(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat* l, mfloat* u, int m, int n, input_parameters para, output_parameters *para_out);
@@ -313,8 +344,13 @@ mfloat norm2_mat(const mfloat* x, int m, int n);
 /// z = y + a*x. a can be 1 and -1. z is output. z can be y.
 void axpy(mfloat a, const mfloat* x, const mfloat* y, mfloat* z, int len);
 
+/// z = y + a*x. a can be 1 and -1. z is output. z can be y. --partial
+void partial_axpy(mfloat a, const mfloat* x, const mfloat* y, mfloat* z, int len, bool *idx);
+
 /// z = b*y + a*x. a can be 1 and -1. z is output. z can be y.
 void axpby(mfloat a, const mfloat* x, mfloat b, const mfloat* y, mfloat* z, int len);
+
+void partial_axpby(const mfloat a, const mfloat* x, mfloat b, const mfloat* y, mfloat* z, const int len, bool *idx);
 
 /// z = a*x. a can be 1 and -1. z is output. z can be x.
 void ax(mfloat a, const mfloat* x, mfloat* z, int len);
@@ -368,6 +404,9 @@ sparseRowMatrix get_BT(sparseRowMatrix BT);
 
 /// sparse matrix vector times for row order matrix
 void spMV_R(sparseRowMatrix A, const mfloat* x, int m, int n, mfloat* Ax);
+
+/// partial column and row sparse matrix times vector
+void partial_CR_spMV(sparseRowMatrix A, const mfloat* x, int nRow, int nCol, mfloat* Ax, bool *row_idx, bool *col_idx);
 
 /// sparse matrix vector transpose-times for column order matrix
 void partial_spMV_2(sparseRowMatrix A, const mfloat* x, int m, int n, mfloat* Ax, spVec_int nzidx);
@@ -470,6 +509,10 @@ void print_spM(sparseRowMatrix input);
 /// create eigen sparse matrix
 Eigen::SparseMatrix<mfloat> get_eigen_spMat(sparseRowMatrix B);
 
+/// create eigen sparse sub-matrix
+void get_eigen_sub_spMat_Q(sparseRowMatrix B, bool *idx, std::vector<Eigen::Triplet<mfloat>> tripletList, int *idx_sum, Eigen::SparseMatrix<mfloat> *mat);
+void get_eigen_sub_spMat_A(sparseRowMatrix B, bool *idx, std::vector<Eigen::Triplet<mfloat>> tripletList, int *idx_sum, Eigen::SparseMatrix<mfloat> *mat);
+
 /// compute the L^{-1} * r;
 void precond_CG(CG_struct* CG_space);
 
@@ -492,7 +535,7 @@ void Runexperiment_xTy();
 
 void writeCOO();
 
-void run_bin();
+void run_bin(const char* file_name);
 
 void line_search(QP_struct *qp);
 
@@ -510,3 +553,17 @@ Eigen::SparseMatrix<mfloat> concat_4_spMat(Eigen::SparseMatrix<mfloat> A, Eigen:
 void test_concat_4_spMat();
 
 void solve_grb();
+
+void CSR_to_COO(sparseRowMatrix Q, sparseMatrixCOO *Q_coo);
+
+void printSparseMatrix(const sparseMatrixCOO* matrix);
+
+void test_CSR_to_COO();
+
+void test_eigen_sub();
+
+void SSN_sub_case1(QP_struct *qp);
+
+mfloat vec_max(const mfloat *x, int len);
+
+void test_eigen_segment_set();

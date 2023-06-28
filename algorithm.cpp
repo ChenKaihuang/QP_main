@@ -100,22 +100,22 @@ void proj(const mfloat* input, mfloat* output, int len, const mfloat* l, const m
     if (!idx) {
 #pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(len, input, output, l ,u)
         for (int i = 0; i <= len; ++i) {
-            if (input[i] < l[i])
-                output[i] = l[i];
-            else if (input[i] >= u[i])
-                output[i] = u[i];
+            if (input[i] < l[i] + 1e-14)
+                output[i] = l[i]+ 1e-14;
+            else if (input[i] >= u[i] - 1e-14)
+                output[i] = u[i]- 1e-14;
             else
                 output[i] = input[i];
         }
     } else {
 #pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(len, input, output, l ,u, idx)
         for (int i = 0; i < len; ++i) {
-            if (input[i] <= l[i]) {
-                output[i] = l[i];
+            if (input[i] <= l[i] + 1e-14) {
+                output[i] = l[i] + 1e-14;
                 idx[i] = false;
             }
-            else if (input[i] >= u[i]) {
-                output[i] = u[i];
+            else if (input[i] >= u[i] - 1e-14) {
+                output[i] = u[i] - 1e-14;
                 idx[i] = false;
             } else {
                 output[i] = input[i];
@@ -171,10 +171,30 @@ void axpy(const mfloat a, const mfloat* x, const mfloat* y, mfloat* z, const int
             z[i] = y[i] + a*x[i];
 }
 
+
+void partial_axpy(const mfloat a, const mfloat* x, const mfloat* y, mfloat* z, const int len, bool *idx){
+#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(len, y, z, a, x, idx)
+    for (int i = 0; i < len; ++i) {
+        if (idx[i]) {
+            z[i] = y[i] + a*x[i];
+        }
+    }
+
+}
+
 void axpby(const mfloat a, const mfloat* x, mfloat b, const mfloat* y, mfloat* z, const int len){
 #pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(len, y, z, a, x, b)
     for (int i = 0; i < len; ++i)
         z[i] = b*y[i] + a*x[i];
+}
+
+void partial_axpby(const mfloat a, const mfloat* x, mfloat b, const mfloat* y, mfloat* z, const int len, bool *idx){
+#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(len, y, z, a, x, b, idx)
+    for (int i = 0; i < len; ++i) {
+        if (idx[i]) {
+            z[i] = b*y[i] + a*x[i];
+        }
+    }
 }
 
 void ax(mfloat a, const mfloat* x, mfloat* z, int len) {
@@ -335,7 +355,8 @@ sparseRowMatrix get_BT(sparseRowMatrix BT) {
 //    int* rowIndex = new int [2*num];
     int nnz = BT.rowStart[BT.nRow];
     Bf.value = new mfloat [nnz];
-    Bf.rowStart = new int [BT.nCol];
+    // correct: BT.nCol -> BT.nCol + 2
+    Bf.rowStart = new int [BT.nCol+2];
 //    BT->rowLength = new int [m];
     Bf.column = new int [nnz];
     mfloat* newValue = Bf.value;
@@ -652,14 +673,14 @@ void QP_solve(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat
     para_out->time_ADMM = time_since(QP_space->time_solve_start);
 
     QP_space->iter = 1;
-    for (int i = 0; i < n; ++i) {
-        QP_space->w_old[i] = QP_space->w[i];
-        QP_space->w0[i] = QP_space->w[i];
-    }
-    for (int i = 0; i < m; ++i) {
-        QP_space->y_old[i] = QP_space->y[i];
-        QP_space->y0[i] = QP_space->y[i];
-    }
+//    for (int i = 0; i < n; ++i) {
+//        QP_space->w_old[i] = QP_space->w[i];
+//        QP_space->w0[i] = QP_space->w[i];
+//    }
+//    for (int i = 0; i < m; ++i) {
+//        QP_space->y_old[i] = QP_space->y[i];
+//        QP_space->y0[i] = QP_space->y[i];
+//    }
     if (QP_space->maxALMiter > 0)
         pALM_SSN_QP(QP_space);
 
@@ -670,7 +691,7 @@ void QP_solve(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat
 void sGSADMM_QP(QP_struct *QP_space) {
     sGSADMM_QP_compute_status(QP_space);
 
-    while (QP_space->iter < QP_space->maxADMMiter) {
+    while (QP_space->iter <= QP_space->maxADMMiter) {
         sGSADMM_QP_print_status(QP_space);
         if (QP_space->sGSADMM_finish) break;
 
@@ -735,21 +756,22 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
     QP_space->xorg = new mfloat [n];
     QP_space->y_old = new mfloat [n];
     QP_space->w_old = new mfloat [n];
-    QP_space->y0 = new mfloat [n];
-    QP_space->w0 = new mfloat [n];
+    QP_space->y_new = new mfloat [n];
+    QP_space->w_new = new mfloat [n];
     QP_space->dQdA = new mfloat [m+n];
     QP_space->Qw = new mfloat [n];
-    QP_space->Qw0 = new mfloat [n];
+    QP_space->Qw_new = new mfloat [n];
+    QP_space->normGrad_list = new mfloat [QP_space->max_iter_SSN+1];
     for (int i = 0; i < n; ++i) {
         QP_space->w[i] = 0; QP_space->z[i] = 0; QP_space->x[i] = 0;
         QP_space->w_old[i] = 0; QP_space->z_old[i] = 0; QP_space->x_old[i] = 0;
-        QP_space->w0[i] = 0; QP_space->x0[i] = 0; QP_space->z_old[i] = 0;
-        QP_space->Qw0[i] = 0;
+        QP_space->w_new[i] = 0; QP_space->x0[i] = 0; QP_space->z_old[i] = 0;
+        QP_space->Qw_new[i] = 0;
     }
     for (int i = 0; i < m; ++i) {
         QP_space->y[i] = 0;
         QP_space->y_old[i] = 0;
-        QP_space->y0[i] = 0;
+        QP_space->y_new[i] = 0;
     }
     QP_space->gamma = QP_space->input_para.gamma;
 //    QP_space->sigma = 1.0;
@@ -793,6 +815,13 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
     QP_space->Qdw = new mfloat [n];
     QP_space->update_w_rhs = new mfloat [n];
     QP_space->proj_idx = new bool [n];
+    QP_space->zero_idx = new bool [n];
+    QP_space->SSN_rhs = new mfloat [n];
+    QP_space->proj_idx_sum = new int [n];
+    QP_space->SSN_sub_case1_temp1 = new mfloat [n];
+    QP_space->SSN_sub_case1_temp2 = new mfloat [m];
+    QP_space->SSN_sub_case1_temp3 = new mfloat [m];
+    QP_space->SSN_r1_new = new mfloat [n];
     QP_space->U_idx.vec = new int [n];
     QP_space->z_ATy_c = new mfloat [n];
     QP_space->Qw_ATy_c = new mfloat [n];
@@ -843,6 +872,13 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
         }
     }
     Eigen_init(QP_space);
+
+    if (QP_space->SSN_method == 1) {
+//        QP_space->tripletList_Qsub.reserve(QP_space->Q.rowStart[QP_space->Q.nRow]);
+//        CSR_to_COO(QP_space->Q, &QP_space->Q_coo);
+//        QP_space->Q_sub_counter = new int [QP_space->Q.rowStart[QP_space->Q.nRow]];
+    }
+
 //    Eigen::SparseMatrix<mfloat> EigenA = get_eigen_spMat(QP_space->A);
 //    Eigen::SparseMatrix<mfloat> EigenAT = get_eigen_spMat(QP_space->AT);
 //    Eigen::SparseMatrix<mfloat> EigenAAT = EigenA.transpose()*EigenA;
@@ -929,10 +965,10 @@ void rescalingADMM(QP_struct *qp) {
         ax(inv_bscale2, qp->u, qp->u, n);
         qp->normb /= bscale2;
 //        qp->normb = norm2(qp->b, m);
-        cout << "normb: " << qp->normb << endl;
+//        cout << "normb: " << qp->normb << endl;
 //        qp->normc = norm2(qp->c, n);
         qp->normc /= cscale2;
-        cout << "normc: " << qp->normc << endl;
+//        cout << "normc: " << qp->normc << endl;
 
         ax(inv_bscale2, qp->x, qp->x, n);
         ax(inv_cscale2, qp->z, qp->z, n);
@@ -1159,6 +1195,7 @@ void sGSADMM_QP_compute_status(QP_struct *QP_space) {
 
     // only for after-scaling, update sigma use
 //    if (QP_space->iter % sGSADMM_sigma_update_iter(QP_space->iter) == 1) {
+//    if (QP_space->iter % QP_space->sigma_update_iter == 1) {
     if (1) {
         axpy(-1, QP_space->Qw, QP_space->Qx, QP_space->RQ, n);
 
@@ -1302,7 +1339,7 @@ void sGSADMM_QP_refact_IQ(QP_struct* QP_space) {
 }
 
 int sGSADMM_print_iter(int iter) {
-    return 1;
+//    return 1;
     if (iter <= 200)
         return 50;
     else if (iter <= 2000)
@@ -1320,17 +1357,16 @@ void sGSADMM_QP_print_status(QP_struct* QP_space) {
     if (QP_space->iter == 1) {
         printf("iter    obj_p          obj_d           inf_g     inf_p      inf_d       inf_Q      inf_C      sigma       tau      time\n");
     }
-    std::vector<mfloat> inf;
-    mfloat time_solve_now = time_since(QP_space->time_solve_start);
-    if (QP_space->iter % sGSADMM_print_iter(QP_space->iter) == 0) {
-        printf("%4d    %7.6e   %7.6e    %2.1e    %2.1e    %2.1e    %2.1e    %2.1e    %2.1e    %2.1e    %3.2f\n", QP_space->iter, QP_space->primal_obj_org, QP_space->dual_obj_org, QP_space->inf_g_org, QP_space->inf_p_org, QP_space->inf_d_org, QP_space->inf_Q_org, QP_space->inf_C_org, QP_space->sigma, QP_space->tau, time_solve_now);
-        inf = {QP_space->inf_p_org, QP_space->inf_d_org, min(max(QP_space->inf_Q_org, QP_space->inf_C_org), QP_space->inf_g_org)};
-        if (*max_element(inf.begin(), inf.end()) < QP_space->sGSADMM_tol) {
-            QP_space->sGSADMM_finish = true;
-            cout << "sGSADMM error is " << *max_element(inf.begin(), inf.end()) << endl;
-        }
-
+    QP_space->inf = {QP_space->inf_p_org, QP_space->inf_d_org, min(max(QP_space->inf_Q_org, QP_space->inf_C_org), QP_space->inf_g_org)};
+    if (*max_element(QP_space->inf.begin(), QP_space->inf.end()) < QP_space->sGSADMM_tol) {
+        QP_space->sGSADMM_finish = true;
+        cout << "sGSADMM error is " << *max_element(QP_space->inf.begin(), QP_space->inf.end()) << endl;
     }
+    mfloat time_solve_now = time_since(QP_space->time_solve_start);
+    if ((QP_space->iter % sGSADMM_print_iter(QP_space->iter) == 1) || (QP_space->sGSADMM_finish) || (QP_space->iter == QP_space->maxADMMiter)) {
+        printf("%4d    %7.6e   %7.6e    %2.1e    %2.1e    %2.1e    %2.1e    %2.1e    %2.1e    %2.1e    %3.2f\n", QP_space->iter, QP_space->primal_obj_org, QP_space->dual_obj_org, QP_space->inf_g_org, QP_space->inf_p_org, QP_space->inf_d_org, QP_space->inf_Q_org, QP_space->inf_C_org, QP_space->sigma, QP_space->tau, time_solve_now);
+    }
+
 }
 
 void pALM_QP_print_status(QP_struct* QP_space) {
@@ -1344,6 +1380,7 @@ void pALM_QP_print_status(QP_struct* QP_space) {
         inf = {QP_space->inf_p_org, QP_space->inf_d_org, min(max(QP_space->inf_Q_org, QP_space->inf_C_org), QP_space->inf_g_org)};
         if (*max_element(inf.begin(), inf.end()) < QP_space->pALM_tol) {
             QP_space->pALM_finish = true;
+            cout << "case1 time = " << QP_space->case1_time << endl;
             cout << "pALM error is " << *max_element(inf.begin(), inf.end()) << endl;
         }
 
@@ -1439,7 +1476,7 @@ void pALM_SSN_QP(QP_struct* QP_space) {
     BiCG_space->dim_m = m;
     BiCG_space->dim_n = n;
     mfloat eta = 0.1, v = 1, delta = 0.9, rho = 0.01;
-    int findStep_maxiter = 20, i;
+    int findStep_maxiter = 20;
 
     BiCG_init(BiCG_space);
 
@@ -1451,7 +1488,9 @@ void pALM_SSN_QP(QP_struct* QP_space) {
 
     pALM_QP_compute_status(QP_space);
     pALM_QP_print_status(QP_space);
+    mfloat normGrad_speed;
     while ((QP_space->iter < QP_space->maxALMiter) && (!QP_space->pALM_finish) ) {
+        mfloat tau_old = QP_space->tau;
         QP_space->tau = max(1e-12, QP_space->kappa*pow(QP_space->iter, -2.5)) * QP_space->sigma;
         // SSN
         int SSNiter = 1;
@@ -1468,12 +1507,14 @@ void pALM_SSN_QP(QP_struct* QP_space) {
 //        QP_space->SSN_tol = min(0.1, norm2(QP_space->b, m));
         while (SSNiter < QP_space->max_iter_SSN) {
             // compute rhs of SSN
-            SSN_compute_grad(QP_space);
-            normGrad = norm2(QP_space->SSN_grad, m+n);
 //            cout << "normGrad = " << normGrad << endl;
             QP_space->obj_old = SSN_obj_val(QP_space);
             spMV_R(QP_space->A, QP_space->x, m, n, QP_space->Ax);
             axpy(-1, QP_space->Ax, QP_space->b, QP_space->Rp_sub, m);
+            SSN_compute_grad(QP_space);
+            normGrad = norm2(QP_space->SSN_grad, m+n);
+            QP_space->normGrad_list[SSNiter] = normGrad;
+
 
             axpy(1, QP_space->temp_z, QP_space->z, QP_space->Rd_sub, n);
             mfloat primal_infeas_sub = norm2(QP_space->Rp_sub, m)/(1+QP_space->normb);
@@ -1489,6 +1530,25 @@ void pALM_SSN_QP(QP_struct* QP_space) {
             if (normGrad < QP_space->SSN_tol) {
                 printf("good termination in SSN\n");
                 break;
+            }
+            if (SSNiter == QP_space->max_iter_SSN) {
+                printf("maximum iteration in SSN reached\n");
+                break;
+            }
+            if ((SSNiter > 5) && (QP_space->iter_step == QP_space->max_iter_step)) {
+                printf("maximum iteration in step size search reached\n");
+                break;
+            }
+            if (SSNiter > 20) {
+                normGrad_speed = 0.0;
+                for (int i = SSNiter-10; i <= SSNiter-1; ++i)
+                    normGrad_speed += QP_space->normGrad_list[i+1]/QP_space->normGrad_list[i];
+                normGrad_speed /= 10;
+
+                if (abs(1-normGrad_speed) < 2e-2) {
+                    printf("slow progress in SSN\n");
+                    break;
+                }
             }
 
             /// compute Newton direction
@@ -1513,10 +1573,11 @@ void pALM_SSN_QP(QP_struct* QP_space) {
                 BiCG(BiCG_space->x0, QP_space->SSN_grad, QP_space->SSN_dwdy, BiCG_space, QP_space);
             } else if (QP_space->SSN_method == 1) {
                 if ((0 < QP_space->U_idx.number) && (QP_space->U_idx.number < n)) {
-
+                    SSN_sub_case1(QP_space);
                 } else if (QP_space->U_idx.number == n) {
                     if (QP_space->first_full_idx) {
                         QP_space->first_full_idx = false;
+                        QP_space->diag_modifier.resize(m+n, 1);
 //                        cout << QP_space->EigenQ.coeff(1,1) << endl;
                         QP_space->AQ = QP_space->EigenA*QP_space->EigenQ;
                         QP_space->hessian_1 = -(1+QP_space->tau/QP_space->sigma)/QP_space->sigma*QP_space->EigenIn - QP_space->EigenQ;
@@ -1530,11 +1591,19 @@ void pALM_SSN_QP(QP_struct* QP_space) {
                     } else {
 
                         // can be improved
-                        QP_space->hessian_1 = -(1+QP_space->tau/QP_space->sigma)/QP_space->sigma*QP_space->EigenIn-QP_space->EigenQ;
-                        QP_space->hessian_4 = -QP_space->tau/QP_space->sigma/QP_space->sigma*QP_space->EigenIm - QP_space->EigenAAT;
-                        QP_space->hessian_full_idx = concat_4_spMat(QP_space->hessian_1, QP_space->EigenAT, QP_space->AQ, QP_space->hessian_4);
+                        QP_space->diag_modifier.segment(0, n).setConstant((1+tau_old/QP_space->sigma_old)/QP_space->sigma_old - (1+QP_space->tau/QP_space->sigma)/QP_space->sigma);
+                        QP_space->diag_modifier.segment(n, m).setConstant(tau_old/QP_space->sigma_old/QP_space->sigma_old - QP_space->tau/QP_space->sigma/QP_space->sigma);
+
+                        QP_space->hessian_full_idx.diagonal() += QP_space->diag_modifier;
+
+
+//                        QP_space->hessian_1 = -(1+QP_space->tau/QP_space->sigma)/QP_space->sigma*QP_space->EigenIn - QP_space->EigenQ;
+//                        QP_space->hessian_4 = -QP_space->tau/QP_space->sigma/QP_space->sigma*QP_space->EigenIm - QP_space->EigenAAT;
+//                        QP_space->hessian_full_idx = concat_4_spMat(QP_space->hessian_1, QP_space->EigenAT, QP_space->AQ, QP_space->hessian_4);
 //                        QP_space->Eigen_linear_hessian_full_idx.LLTsolver.analyzePattern(QP_space->hessian_full_idx);
                         QP_space->Eigen_linear_hessian_full_idx.LUsolver.factorize(QP_space->hessian_full_idx);
+//                        cout << QP_space->hessian_full_idx.norm() << endl;
+//                        cout << QP_space->hessian_full_idx.coeff(1,1) << endl;
                     }
                     ax(1/QP_space->sigma, QP_space->SSN_grad, QP_space->SSN_grad_invsigma, m+n);
                     vMemcpy(QP_space->SSN_grad_invsigma, m+n, QP_space->Eigen_rhs_dwdy.data());
@@ -1543,7 +1612,8 @@ void pALM_SSN_QP(QP_struct* QP_space) {
 //                    cout << QP_space->Eigen_result_dwdy << endl;
                     vMemcpy(QP_space->Eigen_result_dwdy.data(), m+n, QP_space->SSN_dwdy);
 
-
+                    // get -dwdy in this section
+                    ax(-1, QP_space->SSN_dwdy, QP_space->SSN_dwdy, m+n);
                 } else {}
             }
 
@@ -1651,43 +1721,45 @@ void Taylor_test(BiCG_struct* BiCG_space, QP_struct* QP_space) {
 }
 
 void line_search(QP_struct* qp) {
+    // the performance is not exactly same with MATLAB version due to numerical error,
+    // also influence the following iterations.
     int m = qp->m, n = qp->n;
     mfloat *dw = qp->SSN_dwdy, *dy = qp->SSN_dwdy+n;
     spMV_R(qp->Q, dw, n, n, qp->Qdw);
     spMV_R(qp->AT, dy, n, m, qp->ATdy);
 
-    mfloat g0 = -xTy(qp->Qdw, qp->SSN_grad, n);
-    g0 -= xTy(dy, qp->SSN_grad+n, m);
+    mfloat g0 = xTy(qp->Qdw, qp->SSN_grad, n);
+    g0 += xTy(dy, qp->SSN_grad+n, m);
 
     if (g0 < 0) {
         printf("need descent direction\n");
-        ax(-1, qp->SSN_grad, dw, n);
+        ax(1, qp->SSN_grad, dw, n);
         spMV_R(qp->Q, dw, n, n, qp->Qdw);
-        ax(-1, qp->SSN_grad+n, dy, m);
+        ax(1, qp->SSN_grad+n, dy, m);
         spMV_R(qp->AT, dy, n, m, qp->ATdy);
     }
 
 
     mfloat c1 = 1e-4, c2 = 0.9;
     mfloat tau_sigma = qp->tau/qp->sigma, sigma = qp->sigma;
-    spMV_R(qp->AT, qp->y_old, qp->n, qp->m, qp->ATy0);
+    spMV_R(qp->AT, qp->y, qp->n, qp->m, qp->ATy0);
 
     /// Armijo rule
     mfloat alpha = 1.0, alpha_const = 0.5, LB = 0, UB = 1;
     mfloat g_LB, g_UB;
     int iter;
-    for (iter = 1; iter <= 40; ++iter) {
+    for (iter = 1; iter <= qp->max_iter_step; ++iter) {
         if (iter == 1) {
             alpha = 1.0;
             LB = 0; UB = 1;
         } else
             alpha = alpha_const*(LB+UB);
 
-        axpy(alpha, dw, qp->w_old, qp->w, n);
-        axpy(alpha, qp->Qdw, qp->Qw_old, qp->Qw, n);
-        axpby(-1, qp->Qw, -1, qp->c, qp->temp_z, n);
+        axpy(alpha, dw, qp->w, qp->w_new, n);
+        axpy(alpha, qp->Qdw, qp->Qw, qp->Qw_new, n);
+        axpby(-1, qp->Qw_new, -1, qp->c, qp->temp_z, n);
 
-        axpy(alpha, dy, qp->y_old, qp->y, m);
+        axpy(alpha, dy, qp->y, qp->y_new, m);
         axpy(alpha, qp->ATdy, qp->ATy0, qp->ATy, n);
         axpy(1, qp->ATy, qp->temp_z, qp->temp_z, n);
 
@@ -1697,18 +1769,18 @@ void line_search(QP_struct* qp) {
         axpby(1/sigma, qp->x, -1/sigma, qp->pALM_z_unProjected, qp->z, n);
 
         // compute obj
-        axpy(-1, qp->w_old, qp->w, qp->w_diff, n);
-        axpy(-1, qp->Qw_old, qp->Qw, qp->Qw_diff, n);
-        axpy(tau_sigma, qp->w_diff, qp->w, qp->line_search_temp1, n);
+        axpy(-1, qp->w_old, qp->w_new, qp->w_diff, n);
+        axpy(-1, qp->Qw_old, qp->Qw_new, qp->Qw_diff, n);
+        axpy(tau_sigma, qp->w_diff, qp->w_new, qp->line_search_temp1, n);
         axpy(-1, qp->x, qp->line_search_temp1, qp->line_search_temp1, n);
         mfloat g_alpha = -xTy(qp->Qdw, qp->line_search_temp1, n);
-        mfloat LQ = -0.5*xTy(qp->w, qp->Qdw, n) - xTy(qp->x, qp->temp_z, n) + 0.5/sigma*pow(distance(qp->x, qp->x_old, n), 2)
+        mfloat LQ = -0.5*xTy(qp->w_new, qp->Qw_new, n) - xTy(qp->x, qp->temp_z, n) + 0.5/sigma*pow(distance(qp->x, qp->x_old, n), 2)
                 - 0.5*tau_sigma*xTy(qp->w_diff, qp->Qw_diff, n);
 
-        axpy(-1, qp->y_old, qp->y, qp->y_diff, m);
+        axpy(-1, qp->y_old, qp->y_new, qp->y_diff, m);
         axpy(-tau_sigma, qp->y_diff, qp->b, qp->line_search_temp2, m);
         g_alpha += xTy(dy, qp->line_search_temp2, m) - xTy(qp->x, qp->ATdy, n);
-        LQ += xTy(qp->b, qp->y, m) - 0.5*tau_sigma*xTy(qp->y_diff, qp->y_diff, m);
+        LQ += xTy(qp->b, qp->y_new, m) - 0.5*tau_sigma*xTy(qp->y_diff, qp->y_diff, m);
 
         if (iter == 1) {
             g_LB = g0;
@@ -1729,8 +1801,14 @@ void line_search(QP_struct* qp) {
         }
     }
 
+    vMemcpy(qp->w_new, n, qp->w);
+    vMemcpy(qp->Qw_new, n, qp->Qw);
+    vMemcpy(qp->y_new, m, qp->y);
+
+
     printf(" [step = %2.1e iter = %2d]\n", alpha, iter);
 
+    qp->iter_step = iter;
     int nnz = 0;
     int *p = qp->U_idx.vec;
     for (int i = 0; i < n; ++i) {
@@ -1754,6 +1832,7 @@ void SSN_findStep_update_variables(QP_struct* QP_space) {
     axpy(QP_space->sigma, QP_space->temp_z, QP_space->x_old, QP_space->pALM_z_unProjected, n);
 
     // maybe not exactly x, just somewhere to store.
+    // --not true, should be x
     proj(QP_space->pALM_z_unProjected, QP_space->x, n, QP_space->l, QP_space->u, QP_space->proj_idx);
 
     int nnz = 0;
@@ -1775,7 +1854,7 @@ void pALM_update_variables(QP_struct* QP_space) {
 }
 
 mfloat SSN_obj_val(QP_struct* QP_space) {
-    mfloat res = 0;
+    mfloat res = 0.0;
     int m = QP_space->m, n = QP_space->n;
     res -= xTy(QP_space->temp_z, QP_space->x, n);
 
@@ -1784,17 +1863,23 @@ mfloat SSN_obj_val(QP_struct* QP_space) {
 //    axpy(-1, QP_space->x, QP_space->pALM_z_projected, QP_space->SSN_compute_obj_temp1, n);
 //    QP_space->x_diff_norm = xTy(QP_space->SSN_compute_obj_temp1, QP_space->SSN_compute_obj_temp1, n);
     res -= 1/(2*QP_space->sigma)* QP_space->x_diff_norm;
-    res += 1.0/2*xTy(QP_space->w, QP_space->Qw, n);
-    res -= xTy(QP_space->b, QP_space->y, m);
 
+    // check here, different from the paper
+    res -= 1.0/2*xTy(QP_space->w, QP_space->Qw, n);
+
+    res += xTy(QP_space->b, QP_space->y, m);
+
+
+    // seems no need
     axpy(-1, QP_space->w_old, QP_space->w, QP_space->w_diff, n);
 //    spMV_R(QP_space->Q, QP_space->w_diff, n, n, QP_space->Qdw);
 
 //    QP_space->dwQdw = xTy(QP_space->w_diff, QP_space->Qdw, n);
     axpy(-1, QP_space->Qw_old, QP_space->Qw, QP_space->Qw_diff, n);
     QP_space->dwQdw = xTy(QP_space->w_diff, QP_space->Qw_diff, n);
-    QP_space->y_diff_norm = pow(distance(QP_space->y, QP_space->y_old, m), 2);
-    res += QP_space->tau/(2*QP_space->sigma) * (QP_space->dwQdw + QP_space->y_diff_norm);
+    axpy(-1, QP_space->y_old, QP_space->y, QP_space->y_diff, m);
+    QP_space->y_diff_norm = pow(norm2(QP_space->y_diff, m), 2);
+    res -= QP_space->tau/(2*QP_space->sigma) * (QP_space->dwQdw + QP_space->y_diff_norm);
 
     return res;
 }
@@ -1802,15 +1887,15 @@ mfloat SSN_obj_val(QP_struct* QP_space) {
 void SSN_compute_grad(QP_struct* QP_space) {
     int m = QP_space->m, n = QP_space->n;
     mfloat tau = QP_space->tau, sigma = QP_space->sigma;
-    axpby(-1, QP_space->x, 1+tau/sigma, QP_space->w, QP_space->SSN_grad, n);
-    axpy(-tau/sigma, QP_space->w_old, QP_space->SSN_grad, QP_space->SSN_grad, n);
+    axpby(1, QP_space->x, -1, QP_space->w, QP_space->SSN_grad, n);
+    axpy(-tau/sigma, QP_space->w_diff, QP_space->SSN_grad, QP_space->SSN_grad, n);
     spMV_R(QP_space->Q, QP_space->SSN_grad, n, n, QP_space->SSN_grad_Q);
 
 
-    spMV_R(QP_space->A, QP_space->x, m, n, QP_space->Az);
-    axpy(-1, QP_space->b, QP_space->Az, QP_space->SSN_grad+n, m);
-    axpy(tau/sigma, QP_space->y, QP_space->SSN_grad+n, QP_space->SSN_grad+n, m);
-    axpy(-tau/sigma, QP_space->y_old, QP_space->SSN_grad+n, QP_space->SSN_grad+n, m);
+//    spMV_R(QP_space->A, QP_space->x, m, n, QP_space->Az);
+//    axpy(-1, QP_space->b, QP_space->Az, QP_space->SSN_grad+n, m);
+    axpy(-tau/sigma, QP_space->y_diff, QP_space->Rp_sub, QP_space->SSN_grad+n, m);
+//    axpy(-tau/sigma, QP_space->y_old, QP_space->SSN_grad+n, QP_space->SSN_grad+n, m);
     vMemcpy(QP_space->SSN_grad+n, m, QP_space->SSN_grad_Q+n);
 //    ax(-1, QP_space->SSN_grad, QP_space->SSN_grad,)
 }
@@ -1840,18 +1925,21 @@ void BiCG_prod(const mfloat *x, mfloat* output, BiCG_struct *BiCG_space, QP_stru
     }
 
     partial_spMV_R(Q, x1, U_idx.number, n, Qx, U_idx);
-    axpby(-1-tau/sigma, x1, -sigma, Qx, temp1, n);
+    axpby(1+tau/sigma, x1, sigma, Qx, temp1, n);
     partial_spMV_R(AT, x2, U_idx.number, m, ATy, U_idx);
-    axpy(sigma, ATy, temp1, output1, n);
+    axpy(-sigma, ATy, temp1, output1, n);
 
 //    partial_spMV_R(Q, x1, U_idx.number, n, temp2, U_idx);
 //    axpy(1+tau/sigma, x1, temp1, temp1, n);
+
+    // strange here, check why spMV_2
     partial_spMV_2(AT, Qx, n, m, temp1, U_idx);
 
 //    partial_spMV_R(AT, x2, U_idx.number, m, temp1, U_idx);
+
     partial_spMV_2(AT, ATy, n, m, output2, U_idx);
-    axpby(-tau/sigma, x2, -sigma, output2, output2, m);
-    axpy(sigma, temp1, output2, output2, m);
+    axpby(tau/sigma, x2, sigma, output2, output2, m);
+    axpy(-sigma, temp1, output2, output2, m);
 }
 
 void BiCG_init(BiCG_struct* CG_space) {
@@ -2006,6 +2094,51 @@ void partial_spMV_R(sparseRowMatrix A, const mfloat* x, int m, int n, mfloat* Ax
     }
 }
 
+void partial_CR_spMV(sparseRowMatrix A, const mfloat* x, int nRow, int nCol, mfloat* Ax, bool *row_idx, bool *col_idx) {
+    mfloat* value = A.value;
+    int* rowStart = A.rowStart;
+    int* column = A.column;
+    assert(A.nCol == nCol);
+//    int row_num = 0;
+    if (row_idx == nullptr) {
+#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) shared(col_idx,row_idx,nRow, Ax, rowStart, value, x, column, nCol) default(none)
+        for (int i = 0; i < nRow; ++i) {
+            Ax[i] = 0;
+            for (int j = rowStart[i]; j < rowStart[i+1]; ++j) {
+//            assert(column[j] < nCol);
+                if (col_idx[column[j]])
+                    Ax[i] += value[j]*x[column[j]];
+            }
+        }
+    } else if (col_idx == nullptr) {
+#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) shared(col_idx,row_idx,nRow, Ax, rowStart, value, x, column, nCol) default(none)
+        for (int i = 0; i < nRow; ++i) {
+            Ax[i] = 0;
+            if (row_idx[i]) {
+                for (int j = rowStart[i]; j < rowStart[i+1]; ++j) {
+//            assert(column[j] < nCol);
+                    Ax[i] += value[j]*x[column[j]];
+                }
+            }
+
+        }
+    } else {
+#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) shared(col_idx,row_idx,nRow, Ax, rowStart, value, x, column, nCol) default(none)
+        for (int i = 0; i < nRow; ++i) {
+            Ax[i] = 0;
+            if (row_idx[i]) {
+                for (int j = rowStart[i]; j < rowStart[i+1]; ++j) {
+//            assert(column[j] < nCol);
+                    if (col_idx[column[j]])
+                        Ax[i] += value[j]*x[column[j]];
+                }
+            }
+
+        }
+    }
+
+}
+
 sparseRowMatrix B_sub_Row(spVec_int nzidx, sparseRowMatrix BT) {
     sparseRowMatrix Bf;
     int num = nzidx.number;
@@ -2061,7 +2194,6 @@ sparseRowMatrix B_sub_Row(spVec_int nzidx, sparseRowMatrix BT) {
 
     return Bf;
 }
-
 
 void Runexperiment_MINST() {
 }
@@ -2147,7 +2279,7 @@ void update_sigma(QP_struct *QP_space) {
     int iter = QP_space->iter;
     if (min(QP_space->inf_p_org, QP_space->inf_d_org) < 50 * QP_space->stop_tol) {
         QP_space->use_inforg = true;
-        cout << "iter = " << iter << " use inforg" << endl;
+//        cout << "iter = " << iter << " use inforg" << endl;
     }
     mfloat errPD, errP, errD;
     if (QP_space->use_inforg) {
@@ -2165,7 +2297,7 @@ void update_sigma(QP_struct *QP_space) {
         QP_space->prim_win++;
     else if (ratio > 1/0.95) {
         QP_space->dual_win++;
-        cout << "errP = " << errP << " errD = " << errD << " errPD = " << errPD << " ratio = " << ratio << endl;
+//        cout << "errP = " << errP << " errD = " << errD << " errPD = " << errPD << " ratio = " << ratio << endl;
     }
 
 
@@ -2174,7 +2306,7 @@ void update_sigma(QP_struct *QP_space) {
 
     if ((!QP_space->fix_sigma) && (iter % QP_space->sigma_update_iter == 1)) {
         QP_space->sigma_old = QP_space->sigma;
-        cout << "primal win: " << QP_space->prim_win << " dual win: " << QP_space->dual_win << endl;
+//        cout << "primal win: " << QP_space->prim_win << " dual win: " << QP_space->dual_win << endl;
         if (QP_space->prim_win > QP_space->dual_win) {
             // primal good, increase sigma
             QP_space->sigma = min(QP_space->sigma_max, QP_space->sigma_old * QP_space->sigma_scale);
@@ -2246,6 +2378,61 @@ Eigen::SparseMatrix<mfloat> get_eigen_spMat(sparseRowMatrix B) {
     return mat;
 // mat is ready to go!
 
+}
+
+void get_eigen_sub_spMat_Q(sparseRowMatrix B, bool *idx, std::vector<Eigen::Triplet<mfloat>> tripletList, int *idx_sum, Eigen::SparseMatrix<mfloat> *mat) {
+//    typedef Eigen::Triplet<mfloat> T;
+//    std::vector<T> tripletList;
+//    tripletList.reserve(B.rowStart[B.nRow]);
+    tripletList.clear();
+    tripletList.reserve(B.rowStart[B.nRow]);
+    int *rowStart = B.rowStart;
+    mfloat *value = B.value;
+    int *column = B.column;
+    int nRow = 0;
+    for (int i = 0; i < B.nRow; ++i) {
+        if (!idx[i]) continue;
+        for (int j = rowStart[i]; j < rowStart[i+1]; ++j) {
+            int col = column[j];
+            if (!idx[col]) continue;
+            tripletList.emplace_back(i-idx_sum[i], col-idx_sum[col],value[j]);
+        }
+    }
+//    cout << nRow << endl;
+//    auto data = tripletList.data();
+//    cout << data[0] << endl;
+//    cout << tripletList.size() << endl;
+    mat->resize(B.nRow-idx_sum[B.nRow-1], B.nRow-idx_sum[B.nRow-1]);
+    mat->setFromTriplets(tripletList.begin(), tripletList.end());
+//    return Q_sub;
+}
+
+void get_eigen_sub_spMat_A(sparseRowMatrix B, bool *idx, std::vector<Eigen::Triplet<mfloat>> tripletList, int *idx_sum, Eigen::SparseMatrix<mfloat> *mat) {
+//    typedef Eigen::Triplet<mfloat> T;
+//    std::vector<T> tripletList;
+//    tripletList.reserve(B.rowStart[B.nRow]);
+
+    // get A partial column or get AT partial row, which is faster??
+    tripletList.clear();
+    tripletList.reserve(B.rowStart[B.nRow]);
+    int *rowStart = B.rowStart;
+    mfloat *value = B.value;
+    int *column = B.column;
+    int nRow = 0;
+    for (int i = 0; i < B.nRow; ++i) {
+        for (int j = rowStart[i]; j < rowStart[i+1]; ++j) {
+            int col = column[j];
+            if (!idx[col]) continue;
+            tripletList.emplace_back(i, col-idx_sum[col],value[j]);
+        }
+    }
+//    cout << nRow << endl;
+//    auto data = tripletList.data();
+//    cout << data[0] << endl;
+//    cout << tripletList.size() << endl;
+    mat->resize(B.nRow, B.nCol-idx_sum[B.nCol-1]);
+    mat->setFromTriplets(tripletList.begin(), tripletList.end());
+//    return Q_sub;
 }
 
 void precond_CG(CG_struct* CG_space) {
@@ -2662,13 +2849,13 @@ int PARDISO_release(PARDISO_var *PDS) {
     return 0;
 }
 
-void run_bin() {
+void run_bin(const char* file_name) {
 #ifdef NUM_THREADS_OpenMP
     omp_set_num_threads(NUM_THREADS_OpenMP);
     printf("PARALLEL Switch On: %d threads\n", NUM_THREADS_OpenMP);
 #endif
     mfloat *size = new mfloat [4];
-    read_bin("../python_test/test_bin", size, 4);
+    read_bin(file_name, size, 4);
 
     int m = static_cast<int>(size[0]);
     int n = static_cast<int>(size[1]);
@@ -2680,7 +2867,7 @@ void run_bin() {
 
     int total = 4+nnz_Q*2+n+1+nnz_A*2+m+1+3*n+m;
     mfloat *read = new mfloat [total];
-    read_bin("../python_test/test_bin", read, total);
+    read_bin(file_name, read, total);
 
     mfloat *data = read + 4;
 
@@ -2724,7 +2911,7 @@ void run_bin() {
     }
 
     input_parameters *ip = new input_parameters;
-    ip->max_ADMM_iter = 300;
+    ip->max_ADMM_iter = 1000;
     ip->max_ALM_iter = 100;
     ip->sigma = 1;
     ip->kappa = 1e-4;
@@ -2799,4 +2986,202 @@ void test_concat_4_spMat() {
     auto QQQQ = concat_4_spMat(Q_eigen, Q_eigen, Q_eigen, Q_eigen);
     std::cout << QQQQ << std::endl;
 
+}
+
+void CSR_to_COO(sparseRowMatrix Q, sparseMatrixCOO *Q_coo) {
+    Q_coo->nRow = Q.nRow;
+    Q_coo->nCol = Q.nCol;
+    Q_coo->nElements = Q.rowStart[Q.nRow];
+    Q_coo->elements = new sparseMatrixElement [Q_coo->nElements];
+
+    int count = 0;
+    for (int r = 0; r < Q.nRow; ++r) {
+        for (int j = Q.rowStart[r]; j < Q.rowStart[r+1]; ++j) {
+            Q_coo->elements[count].row = r;
+            Q_coo->elements[count].col = Q.column[j];
+            Q_coo->elements[count].value = Q.value[j];
+            count++;
+        }
+    }
+}
+
+void printSparseMatrix(sparseMatrixCOO matrix) {
+    printf("Sparse Matrix (%d x %d):\n", matrix.nRow, matrix.nCol);
+    for (int i = 0; i < matrix.nElements; i++) {
+        sparseMatrixElement element = matrix.elements[i];
+        printf("(%d, %d) = %f\n", element.row, element.col, element.value);
+    }
+}
+
+void test_CSR_to_COO() {
+    sparseRowMatrix Q;
+    Q.value = new mfloat [4];
+    Q.nRow = 2; Q.nCol = 2;
+    Q.value[0] = 4; Q.value[1] = 2; Q.value[2] = 2; Q.value[3] = 6;
+    Q.rowStart = new int [3];
+    Q.rowStart[0] = 0; Q.rowStart[1] = 2; Q.rowStart[2] = 4;
+    Q.column = new int [4];
+    Q.column[0] = 0; Q.column[1] = 1; Q.column[2] = 0; Q.column[3] = 1;
+
+    sparseMatrixCOO Q_coo;
+    CSR_to_COO(Q, &Q_coo);
+    printSparseMatrix(Q_coo);
+}
+
+void test_eigen_sub() {
+    sparseRowMatrix Q;
+    Q.value = new mfloat [4];
+    Q.nRow = 2; Q.nCol = 2;
+    Q.value[0] = 4; Q.value[1] = 2; Q.value[2] = 2; Q.value[3] = 6;
+    Q.rowStart = new int [3];
+    Q.rowStart[0] = 0; Q.rowStart[1] = 2; Q.rowStart[2] = 4;
+    Q.column = new int [4];
+    Q.column[0] = 0; Q.column[1] = 1; Q.column[2] = 0; Q.column[3] = 1;
+
+    sparseRowMatrix A;
+    A.value = new mfloat [4];
+    A.nRow = 2; A.nCol = 2;
+    A.value[0] = 1; A.value[1] = 1; A.value[2] = 2; A.value[3] = -1;
+    A.rowStart = new int [3];
+    A.rowStart[0] = 0; A.rowStart[1] = 2; A.rowStart[2] = 4;
+    A.column = new int [4];
+    A.column[0] = 0; A.column[1] = 1; A.column[2] = 0; A.column[3] = 1;
+
+    bool *U_idx = new bool[2];
+    U_idx[0] = false; U_idx[1] = true;
+    int *idx_sum = new int [2];
+    idx_sum[0] = (U_idx[0])? 0 : 1;
+    for (int i = 1; i < 2; ++i) idx_sum[i] = (U_idx[i]) ? idx_sum[i-1] : (idx_sum[i-1] + 1);
+    cout << idx_sum[0] << ' ' << idx_sum[1] << endl;
+    std::vector<Eigen::Triplet<mfloat>> tri;
+    Eigen::SparseMatrix<mfloat> A_sub;
+//    tri.reserve(4);
+
+//    {
+        Eigen::SparseMatrix<mfloat> Q_sub;
+        get_eigen_sub_spMat_A(A, U_idx, tri, idx_sum, &A_sub);
+
+        cout << A_sub.rows() << endl;
+        cout << A_sub << endl;
+//    }
+
+//    Q_sub.de
+//    Q_sub = new Eigen::SparseMatrix<mfloat>(2,2);
+//    {
+        U_idx[0] = 1; U_idx[1] = 1;
+        idx_sum[0] = (U_idx[0])? 0 : 1;
+        for (int i = 1; i < 2; ++i) idx_sum[i] = (U_idx[i]) ? idx_sum[i-1] : (idx_sum[i-1] + 1);
+        cout << idx_sum[0] << ' ' << idx_sum[1] << endl;
+
+        get_eigen_sub_spMat_Q(Q, U_idx, tri, idx_sum, &Q_sub);
+        cout << Q_sub << endl;
+//    }
+
+//    delete Q_sub;
+//    Q_sub = new Eigen::SparseMatrix<mfloat>(1,1);
+//    {
+        U_idx[0] = 1; U_idx[1] = 0;
+        idx_sum[0] = (U_idx[0])? 0 : 1;
+        for (int i = 1; i < 2; ++i) idx_sum[i] = (U_idx[i]) ? idx_sum[i-1] : (idx_sum[i-1] + 1);
+        cout << idx_sum[0] << ' ' << idx_sum[1] << endl;
+
+        get_eigen_sub_spMat_Q(Q, U_idx, tri, idx_sum, &Q_sub);
+        cout << Q_sub << endl;
+//    }
+}
+
+void SSN_sub_case1(QP_struct *qp) {
+
+    auto time0 = time_now();
+    int m = qp->m;
+    int n = qp->n;
+    qp->proj_idx_sum[0] = (qp->proj_idx[0])? 0 : 1;
+    for (int i = 1; i < n; ++i) qp->proj_idx_sum[i] = (qp->proj_idx[i]) ? qp->proj_idx_sum[i-1] : (qp->proj_idx_sum[i-1] + 1);
+    get_eigen_sub_spMat_Q(qp->Q, qp->proj_idx, qp->tripletList_Qsub, qp->proj_idx_sum, &qp->Eigen_Q_sub);
+    for (int i = 0; i < n; ++i) qp->zero_idx[i] = !qp->proj_idx[i];
+    partial_CR_spMV(qp->Q, qp->SSN_grad, n, n, qp->SSN_sub_case1_temp1, qp->proj_idx, qp->zero_idx);
+
+    partial_axpy(-qp->sigma/(1+qp->tau/qp->sigma), qp->SSN_sub_case1_temp1, qp->SSN_grad, qp->SSN_r1_new, n, qp->proj_idx);
+
+    qp->Eigen_Q_sub *= qp->sigma;
+    qp->Eigen_Q_sub.diagonal().array() += (1+qp->tau/qp->sigma);
+
+    // if A exists
+    get_eigen_sub_spMat_A(qp->A, qp->proj_idx, qp->tripletList_Qsub, qp->proj_idx_sum, &qp->Eigen_A_sub);
+
+    partial_CR_spMV(qp->A, qp->SSN_sub_case1_temp1, m, n, qp->SSN_sub_case1_temp2, nullptr, qp->proj_idx);
+    partial_CR_spMV(qp->A, qp->SSN_r1_new, m, n, qp->SSN_sub_case1_temp3, nullptr, qp->proj_idx);
+
+    axpy(qp->sigma/(1+qp->tau/qp->sigma), qp->SSN_sub_case1_temp2, qp->SSN_sub_case1_temp3 ,qp->SSN_sub_case1_temp3, m);
+    axpy(1, qp->SSN_grad+n, qp->SSN_sub_case1_temp3, qp->SSN_sub_case1_temp3, m);
+
+    partial_CR_spMV(qp->AT, qp->SSN_sub_case1_temp3, n, m, qp->SSN_rhs, qp->proj_idx, nullptr);
+
+    partial_axpby(-qp->sigma/(1+qp->tau/qp->sigma), qp->SSN_sub_case1_temp1, qp->sigma*qp->sigma/qp->tau, qp->SSN_rhs, qp->SSN_rhs, n, qp->proj_idx);
+    partial_axpy(1, qp->SSN_grad, qp->SSN_rhs, qp->SSN_rhs, n, qp->proj_idx);
+
+    auto temp = qp->Eigen_A_sub.transpose()*qp->Eigen_A_sub;
+//    cout << temp.norm() << endl;
+
+    qp->Eigen_Q_sub += qp->sigma*qp->sigma*(1+qp->tau/qp->sigma)/qp->tau*(qp->Eigen_A_sub.transpose()*qp->Eigen_A_sub);
+
+//    cout << qp->Eigen_Q_sub.coeff(1,1) << endl;
+//    cout << qp->Eigen_Q_sub.coeff(1,2) << endl;
+//    cout << qp->Eigen_Q_sub.norm() << endl;
+
+    qp->Eigen_rhs_w.resize(qp->U_idx.number, 1);
+    mfloat *p = qp->Eigen_rhs_w.data();
+    int count = 0;
+    int *mask = qp->U_idx.vec;
+    for (int i = 0; i < qp->U_idx.number; ++i)
+        p[i] = qp->SSN_rhs[mask[i]];
+
+//    cout << norm2(p, qp->U_idx.number) << endl;
+
+
+    linear_solver_chol temp_solver;
+
+    temp_solver.LLTsolver.analyzePattern(qp->Eigen_Q_sub);
+    temp_solver.LLTsolver.factorize(qp->Eigen_Q_sub);
+
+    qp->Eigen_result_w.resize(qp->U_idx.number, 1);
+
+    qp->Eigen_result_w = temp_solver.LLTsolver.solve(qp->Eigen_rhs_w);
+
+
+    ax(0, qp->SSN_dwdy, qp->SSN_dwdy, n);
+    p = qp->Eigen_result_w.data();
+    for (int i = 0; i < qp->U_idx.number; ++i) {
+        qp->SSN_dwdy[mask[i]] = p[i];
+    }
+
+//    cout << norm2(p, qp->U_idx.number) << endl;
+
+    partial_axpy(1/(1+qp->tau/qp->sigma), qp->SSN_grad, qp->SSN_dwdy, qp->SSN_dwdy, n, qp->zero_idx);
+
+    partial_CR_spMV(qp->A, qp->SSN_dwdy, m, n, qp->SSN_dwdy+n, nullptr, qp->proj_idx);
+
+    axpby(qp->sigma/qp->tau, qp->SSN_sub_case1_temp3, -(1+qp->sigma/qp->tau), qp->SSN_dwdy+n, qp->SSN_dwdy+n, m);
+
+    qp->case1_time += time_since(time0);
+}
+
+mfloat vec_max(const mfloat *x, int len) {
+    mfloat max = x[0];
+    for (int i = 1; i < len; ++i) {
+        if (x[i] > max) max = x[i];
+    }
+    return max;
+}
+
+void test_eigen_segment_set() {
+    int vectorSize = 10;
+    double firstConstant = 1.0;
+    double secondConstant = 2.0;
+
+    Eigen::VectorXd myVector(vectorSize);
+    myVector.segment(0, 3).setConstant(firstConstant);
+    myVector.segment(5, 3).setConstant(secondConstant);
+
+    std::cout << "Vector: " << myVector.transpose() << std::endl;
 }
