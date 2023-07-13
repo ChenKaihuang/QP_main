@@ -18,7 +18,13 @@
 #include <omp.h>
 //#include "mkl.h"
 //#include "mkl_solvers_ee.h"
+#include <Eigen/Dense>
 #include <Eigen/Sparse>
+#include <Eigen/SparseLU>
+#include <Eigen/IterativeLinearSolvers>
+
+#include "mkl_pardiso.h"
+#include "mkl_types.h"
 
 #define mfloat double
 #define NUM_THREADS_OpenMP 8
@@ -219,7 +225,7 @@ typedef struct QP_struct {
     Eigen::SparseMatrix<double> EigenAAT;
     Eigen::SparseMatrix<double> AQ;
     bool first_full_idx = true;
-    Eigen::VectorXd diag_modifier;
+    Eigen::VectorXd diag_modifier, diagNUM;
     Eigen::SparseMatrix<double> hessian_1;
     Eigen::SparseMatrix<double> hessian_4;
     Eigen::SparseMatrix<double> hessian_full_idx;
@@ -243,7 +249,7 @@ typedef struct QP_struct {
 
     Eigen::SparseMatrix<mfloat> Eigen_Q_sub;
     bool *zero_idx;
-    double *SSN_rhs;
+    double *SSN_rhs, *SSN_rhs_compressed;
     Eigen::SparseMatrix<double> Eigen_A_sub;
     int *proj_idx_sum;
     double *SSN_sub_case1_temp1;
@@ -255,6 +261,17 @@ typedef struct QP_struct {
     double *normGrad_list;
     std::vector<mfloat> inf;
     double case1_time = 0.0;
+    double get_eigen_sub_time = 0.0;
+    double partial_CR_spMV_time = 0.0;
+    double partial_axpy_time = 0.0;
+    double axpy_time = 0.0;
+    double eigen_matrix_mult_time = 0.0;
+    double eigen_solver_time = 0.0;
+    double solver_analyze_time = 0.0;
+    double solver_factorize_time = 0.0;
+    double solver_solve_time = 0.0;
+    bool use_eigen = false;
+    bool use_mkl = true;
 } QP_struct;
 
 void Eigen_init(QP_struct *QP_space);
@@ -540,6 +557,7 @@ void run_bin(const char* file_name);
 void line_search(QP_struct *qp);
 
 int PARDISO_init(PARDISO_var *PDS, sparseRowMatrix A);
+int PARDISO_init(PARDISO_var *PDS, Eigen::SparseMatrix<double> *A);
 
 int PARDISO_numerical_fact(PARDISO_var *PDS);
 
@@ -567,3 +585,7 @@ void SSN_sub_case1(QP_struct *qp);
 mfloat vec_max(const mfloat *x, int len);
 
 void test_eigen_segment_set();
+
+void test_MKL_pardiso();
+
+void upper_sparseRowMatrix(sparseRowMatrix A, sparseRowMatrix *A_upper);

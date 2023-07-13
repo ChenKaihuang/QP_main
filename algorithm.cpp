@@ -606,11 +606,11 @@ void simple_QP_test() {
     QP_space->b[0] = 1; QP_space->b[1] = 0;
 
     QP_space->l = new mfloat [2];
-    QP_space->l[0] = -1e300; QP_space->l[1] = -1e300;
+    QP_space->l[0] = 0; QP_space->l[1] = 0;
 //    QP_space->l[0] = 0; QP_space->l[1] = 0;
 
     QP_space->u = new mfloat [2];
-    QP_space->u[0] = 1e300; QP_space->u[1] = 1e300;
+    QP_space->u[0] = 1; QP_space->u[1] = 1;
 //    QP_space->u[0] = 1e300; QP_space->u[1] = 1e300;
 
     QP_space->m = 2; QP_space->n = 2;
@@ -817,6 +817,7 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
     QP_space->proj_idx = new bool [n];
     QP_space->zero_idx = new bool [n];
     QP_space->SSN_rhs = new mfloat [n];
+    QP_space->SSN_rhs_compressed = new mfloat [n];
     QP_space->proj_idx_sum = new int [n];
     QP_space->SSN_sub_case1_temp1 = new mfloat [n];
     QP_space->SSN_sub_case1_temp2 = new mfloat [m];
@@ -874,6 +875,11 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
     Eigen_init(QP_space);
 
     if (QP_space->SSN_method == 1) {
+        QP_space->PDS_IQ = new PARDISO_var;
+//        sparseRowMatrix Q_upper;
+//        upper_sparseRowMatrix(QP_space->Q, &QP_space->Q_upper);
+
+
 //        QP_space->tripletList_Qsub.reserve(QP_space->Q.rowStart[QP_space->Q.nRow]);
 //        CSR_to_COO(QP_space->Q, &QP_space->Q_coo);
 //        QP_space->Q_sub_counter = new int [QP_space->Q.rowStart[QP_space->Q.nRow]];
@@ -1364,6 +1370,7 @@ void sGSADMM_QP_print_status(QP_struct* QP_space) {
     }
     mfloat time_solve_now = time_since(QP_space->time_solve_start);
     if ((QP_space->iter % sGSADMM_print_iter(QP_space->iter) == 1) || (QP_space->sGSADMM_finish) || (QP_space->iter == QP_space->maxADMMiter)) {
+//    if (1) {
         printf("%4d    %7.6e   %7.6e    %2.1e    %2.1e    %2.1e    %2.1e    %2.1e    %2.1e    %2.1e    %3.2f\n", QP_space->iter, QP_space->primal_obj_org, QP_space->dual_obj_org, QP_space->inf_g_org, QP_space->inf_p_org, QP_space->inf_d_org, QP_space->inf_Q_org, QP_space->inf_C_org, QP_space->sigma, QP_space->tau, time_solve_now);
     }
 
@@ -1380,8 +1387,17 @@ void pALM_QP_print_status(QP_struct* QP_space) {
         inf = {QP_space->inf_p_org, QP_space->inf_d_org, min(max(QP_space->inf_Q_org, QP_space->inf_C_org), QP_space->inf_g_org)};
         if (*max_element(inf.begin(), inf.end()) < QP_space->pALM_tol) {
             QP_space->pALM_finish = true;
-            cout << "case1 time = " << QP_space->case1_time << endl;
             cout << "pALM error is " << *max_element(inf.begin(), inf.end()) << endl;
+            cout << "case1 time = " << QP_space->case1_time << endl;
+            cout << "get_eigen_sub_time = " << QP_space->get_eigen_sub_time << endl;
+            cout << "partial_CR_spMV_time = " << QP_space->partial_CR_spMV_time << endl;
+            cout << "partial_axpy_time = " << QP_space->partial_axpy_time << endl;
+            cout << "axpy_time = " << QP_space->axpy_time << endl;
+            cout << "eigen_matrix_mult_time = " << QP_space->eigen_matrix_mult_time << endl;
+            cout << "eigen_solver_time = " << QP_space->eigen_solver_time << endl;
+            cout << "solver_analyze_time = " << QP_space->solver_analyze_time << endl;
+            cout << "solver_factorize_time = " << QP_space->solver_factorize_time << endl;
+            cout << "solver_solve_time = " << QP_space->solver_solve_time << endl;
         }
 
     }
@@ -2474,11 +2490,11 @@ void preprocessing(QP_struct *qp) {
         }
     }
 
-    qp->bscale = max(1.0, qp->normborg);
-    qp->cscale = max(1.0, qp->normcorg);
+    qp->bscale = max(1.0, norm2(qp->b, qp->m));
+    qp->cscale = max(1.0, norm2(qp->c, qp->n));
     cout << qp->bscale * qp->cscale << endl;
-    mfloat invbscale = 1/max(1.0, qp->normborg);
-    mfloat invcscale = 1/max(1.0, qp->normcorg);
+    mfloat invbscale = 1/qp->bscale;
+    mfloat invcscale = 1/qp->cscale;
 
     ax(invbscale, qp->b, qp->b, qp->m);
     ax(invcscale, qp->c, qp->c, qp->n);
@@ -2529,7 +2545,7 @@ void ruiz_equilibration(sparseRowMatrix A, sparseRowMatrix *A_new, sparseRowMatr
     mfloat *E_temp = new mfloat[m];
     mfloat *D_temp = new mfloat[n];
 
-    int max_iter = 10;
+    int max_iter = 50;
     mfloat tol = 1e-6;
 
     for (int i = 0; i < max_iter; ++i) {
@@ -2590,8 +2606,11 @@ void ruiz_equilibration(sparseRowMatrix A, sparseRowMatrix *A_new, sparseRowMatr
         for (int c = 0; c < n; ++c)
             norm2 += pow(1-D_temp[c]*D_temp[c], 2);
         mfloat error = max(sqrt(norm1), sqrt(norm2));
-        if (error < tol)
+        if (error < tol) {
+            cout << "ruiz iteration: " << i << endl;
             break;
+        }
+
     }
 }
 
@@ -2657,11 +2676,17 @@ int PARDISO_init(PARDISO_var *PDS, sparseRowMatrix A) {
         cout << "not square matrix" << endl;
         return 0;
     }
-    PDS->debug = false;
-    PDS->ia = A.rowStart;
-    PDS->ja = A.column;
     int nnz = A.rowStart[A.nRow];
-    PDS->a = A.value;
+    PDS->debug = false;
+//    PDS->ia = A.rowStart;
+    PDS->ia = (int *) malloc(sizeof(int) * (A.nRow+1));
+    PDS->ja = (int *) malloc(sizeof(int) * nnz);
+    PDS->a = (mfloat *) malloc(sizeof(mfloat) * nnz);
+    vMemcpy(A.rowStart, A.nRow+1, PDS->ia);
+//    PDS->ja = A.column;
+    vMemcpy(A.column, nnz, PDS->ja);
+//    PDS->a = A.value;
+    vMemcpy(A.value, nnz, PDS->a);
     PDS->mtype = -2;        /* Real symmetric matrix */
 
     /* RHS and solution vectors. */
@@ -2669,26 +2694,56 @@ int PARDISO_init(PARDISO_var *PDS, sparseRowMatrix A) {
 
     PDS->nrhs = 1;          /* Number of right hand sides. */
 
+    for (int i = 0; i < 64; i++ )
+    {
+        PDS->iparm[i] = 0;
+    }
+    PDS->iparm[0] = 1;         /* No solver default */
+    PDS->iparm[1] = 2;         /* Fill-in reordering from METIS */
+    PDS->iparm[3] = 0;         /* No iterative-direct algorithm */
+    PDS->iparm[4] = 0;         /* No user fill-in reducing permutation */
+    PDS->iparm[5] = 0;         /* Write solution into x */
+    PDS->iparm[6] = 0;         /* Not in use */
+    PDS->iparm[7] = 2;         /* Max numbers of iterative refinement steps */
+    PDS->iparm[8] = 0;         /* Not in use */
+    PDS->iparm[9] = 13;        /* Perturb the pivot elements with 1E-13 */
+    PDS->iparm[10] = 1;        /* Use nonsymmetric permutation and scaling MPS */
+    PDS->iparm[11] = 0;        /* Not in use */
+    PDS->iparm[12] = 0;        /* Maximum weighted matching algorithm is switched-off (default for symmetric). Try iparm[12] = 1 in case of inappropriate accuracy */
+    PDS->iparm[13] = 0;        /* Output: Number of perturbed pivots */
+    PDS->iparm[14] = 0;        /* Not in use */
+    PDS->iparm[15] = 0;        /* Not in use */
+    PDS->iparm[16] = 0;        /* Not in use */
+    PDS->iparm[17] = -1;       /* Output: Number of nonzeros in the factor LU */
+    PDS->iparm[18] = -1;       /* Output: Mflops for LU factorization */
+    PDS->iparm[19] = 0;        /* Output: Numbers of CG Iterations */
+    PDS->iparm[34] = 1;        /* Zero based indexing */
+
+    for (int i = 0; i < 64; i++ )
+    {
+        PDS->pt[i] = 0;
+    }
+
 /* -------------------------------------------------------------------- */
 /* ..  Setup Pardiso control parameters.                                */
 /* -------------------------------------------------------------------- */
 
-    PDS->error = 0;
-    PDS->solver = 0; /* use sparse direct solver */
+//    PDS->error = 0;
+//    PDS->solver = 0; /* use sparse direct solver */
 //    pardisoinit (PDS->pt,  &(PDS->mtype), &(PDS->solver), PDS->iparm, PDS->dparm, &(PDS->error));
 
-    if (PDS->error != 0)
-    {
-        if (PDS->error == -10 )
-            printf("No license file found \n");
-        if (PDS->error == -11 )
-            printf("License is expired \n");
-        if (PDS->error == -12 )
-            printf("Wrong username or hostname \n");
-        return 1;
-    }
-    else
-        printf("[PARDISO]: License check was successful ... \n");
+//    if (PDS->error != 0)
+//    {
+//        if (PDS->error == -10 )
+//            printf("No license file found \n");
+//        if (PDS->error == -11 )
+//            printf("License is expired \n");
+//        if (PDS->error == -12 )
+//            printf("Wrong username or hostname \n");
+//        return 1;
+//    }
+//    else
+//        printf("[PARDISO]: License check was successful ... \n");
 
     /* Numbers of processors, value of OMP_NUM_THREADS */
 //    char *var = getenv("OMP_NUM_THREADS");
@@ -2699,22 +2754,22 @@ int PARDISO_init(PARDISO_var *PDS, sparseRowMatrix A) {
 //        num_procs = 1;
 ////        exit(1);
 //    }
-    PDS->iparm[2]  = 1;
+//    PDS->iparm[2]  = 1;
 
     PDS->maxfct = 1;		/* Maximum number of numerical factorizations.  */
     PDS->mnum   = 1;         /* Which factorization to use. */
 
-    PDS->msglvl = 0;         /* Print statistical information  */
+    PDS->msglvl = 1;         /* Print statistical information  */
     PDS->error  = 0;         /* Initialize error flag */
 
 /* -------------------------------------------------------------------- */
 /* ..  Convert matrix from 0-based C-notation to Fortran 1-based        */
 /*     notation.                                                        */
 /* -------------------------------------------------------------------- */
-    for (int i = 0; i < A.nRow + 1; ++i)
-        (PDS->ia[i])++;
-    for (int i = 0; i < nnz; ++i)
-        (PDS->ja[i])++;
+//    for (int i = 0; i < A.nRow + 1; ++i)
+//        (PDS->ia[i])++;
+//    for (int i = 0; i < nnz; ++i)
+//        (PDS->ja[i])++;
 
 /* -------------------------------------------------------------------- */
 /*  .. pardiso_chk_matrix(...)                                          */
@@ -2722,13 +2777,13 @@ int PARDISO_init(PARDISO_var *PDS, sparseRowMatrix A) {
 /*     Use this functionality only for debugging purposes               */
 /* -------------------------------------------------------------------- */
 
-    if (PDS->debug) {
-//        pardiso_chkmatrix  (&(PDS->mtype), &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->error));
-        if (PDS->error != 0) {
-            printf("\nERROR in consistency of matrix: %d", PDS->error);
-            exit(1);
-        }
-    }
+//    if (PDS->debug) {
+////        pardiso_chkmatrix  (&(PDS->mtype), &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->error));
+//        if (PDS->error != 0) {
+//            printf("\nERROR in consistency of matrix: %d", PDS->error);
+//            exit(1);
+//        }
+//    }
 
 
 /* -------------------------------------------------------------------- */
@@ -2738,43 +2793,135 @@ int PARDISO_init(PARDISO_var *PDS, sparseRowMatrix A) {
 /*     Use this functionality only for debugging purposes               */
 /* -------------------------------------------------------------------- */
 
-    if (PDS->debug) {
-//        pardiso_chkvec(&(PDS->n), &(PDS->nrhs), PDS->b, &(PDS->error));
-        if (PDS->error != 0) {
-            printf("\nERROR  in right hand side: %d", PDS->error);
-            exit(1);
-        }
-    }
+//    if (PDS->debug) {
+////        pardiso_chkvec(&(PDS->n), &(PDS->nrhs), PDS->b, &(PDS->error));
+//        if (PDS->error != 0) {
+//            printf("\nERROR  in right hand side: %d", PDS->error);
+//            exit(1);
+//        }
+//    }
 /* -------------------------------------------------------------------- */
 /* .. pardiso_printstats(...)                                           */
 /*    prints information on the matrix to STDOUT.                       */
 /*    Use this functionality only for debugging purposes                */
 /* -------------------------------------------------------------------- */
 
-    if (PDS->debug) {
-//        pardiso_printstats(&(PDS->mtype), &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->nrhs), PDS->b, &(PDS->error));
-        if (PDS->error != 0) {
-            printf("\nERROR right hand side: %d", PDS->error);
-            exit(1);
-        }
-    }
+//    if (PDS->debug) {
+////        pardiso_printstats(&(PDS->mtype), &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->nrhs), PDS->b, &(PDS->error));
+//        if (PDS->error != 0) {
+//            printf("\nERROR right hand side: %d", PDS->error);
+//            exit(1);
+//        }
+//    }
 //    -------------------------------------------------------------------- */
 /* ..  Reordering and Symbolic Factorization.  This step also allocates */
 /*     all memory that is necessary for the factorization.              */
 /* -------------------------------------------------------------------- */
     PDS->phase = 11;
 
-//    pardiso (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
-//             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs),
-//             PDS->iparm, &(PDS->msglvl), &(PDS->ddum), &(PDS->ddum), &(PDS->error), PDS->dparm);
+    PARDISO (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
+             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs), PDS->iparm, &(PDS->msglvl), &(PDS->ddum), &(PDS->ddum), &(PDS->error));
 
-    if (PDS->error != 0) {
-        printf("\nERROR during symbolic factorization: %d", PDS->error);
-        exit(1);
+    if ( PDS->error != 0 )
+    {
+        printf ("\nERROR during symbolic factorization: " "%i", PDS->error);
+        exit (1);
     }
-    printf("\nReordering completed ... ");
-    printf("\nNumber of nonzeros in factors  = %d", PDS->iparm[17]);
-    printf("\nNumber of factorization MFLOPS = %d", PDS->iparm[18]);
+    printf ("\nReordering completed ... ");
+    printf ("\nNumber of nonzeros in factors = " "%i", PDS->iparm[17]);
+    printf ("\nNumber of factorization MFLOPS = " "%i", PDS->iparm[18]);
+/* -------------------------------------------------------------------- */
+
+    return 0;
+}
+
+int PARDISO_init(PARDISO_var *PDS, Eigen::SparseMatrix<double> *A) {
+    PDS->n = A->rows();
+    if (A->rows() != A->cols()) {
+        cout << "not square matrix" << endl;
+        return 0;
+    }
+    int nnz = A->nonZeros();
+    PDS->debug = false;
+
+    PDS->ia = A->outerIndexPtr();
+    PDS->ja = A->innerIndexPtr();
+    PDS->a = A->valuePtr();
+
+//    PDS->ia = (int *) malloc(sizeof(int) * (A.rows()+1));
+//    PDS->ja = (int *) malloc(sizeof(int) * nnz);
+//    PDS->a = (mfloat *) malloc(sizeof(mfloat) * nnz);
+//    vMemcpy(A.outerIndexPtr(), A.rows()+1, PDS->ia);
+//    vMemcpy(A.innerIndexPtr(), nnz, PDS->ja);
+//    vMemcpy(A.valuePtr(), nnz, PDS->a);
+
+//    cout << PDS->ia[0] << ' ' << PDS->ia[1] << ' ' << PDS->ia[2] << endl;
+//    cout << PDS->ja[0] << ' ' << PDS->ja[1] << ' ' << PDS->ja[2] << ' ' << PDS->ja[3] << endl;
+//    cout << PDS->a[0] << ' ' << PDS->a[1] << ' ' << PDS->a[2] << ' ' << PDS->a[3] << endl;
+
+    PDS->mtype = -2;        /* Real symmetric matrix */
+
+    /* RHS and solution vectors. */
+    PDS->x = (mfloat *) malloc(sizeof(mfloat) * PDS->n);
+
+    PDS->nrhs = 1;          /* Number of right hand sides. */
+
+    for (int i = 0; i < 64; i++ )
+    {
+        PDS->iparm[i] = 0;
+    }
+    PDS->iparm[0] = 1;         /* No solver default */
+    PDS->iparm[1] = 3;         /* Fill-in reordering from METIS */
+    PDS->iparm[3] = 0;         /* No iterative-direct algorithm */
+    PDS->iparm[4] = 0;         /* No user fill-in reducing permutation */
+    PDS->iparm[5] = 0;         /* Write solution into x */
+    PDS->iparm[6] = 0;         /* Not in use */
+    PDS->iparm[7] = 0;         /* Max numbers of iterative refinement steps */
+    PDS->iparm[8] = 0;         /* Not in use */
+    PDS->iparm[9] = 13;        /* Perturb the pivot elements with 1E-13 */
+    PDS->iparm[10] = 1;        /* Use nonsymmetric permutation and scaling MPS */
+    PDS->iparm[11] = 0;        /* Not in use */
+    PDS->iparm[12] = 0;        /* Maximum weighted matching algorithm is switched-off (default for symmetric). Try iparm[12] = 1 in case of inappropriate accuracy */
+    PDS->iparm[13] = 0;        /* Output: Number of perturbed pivots */
+    PDS->iparm[14] = 0;        /* Not in use */
+    PDS->iparm[15] = 0;        /* Not in use */
+    PDS->iparm[16] = 0;        /* Not in use */
+    PDS->iparm[17] = -1;       /* Output: Number of nonzeros in the factor LU */
+    PDS->iparm[18] = -1;       /* Output: Mflops for LU factorization */
+    PDS->iparm[19] = 0;        /* Output: Numbers of CG Iterations */
+    PDS->iparm[34] = 1;        /* Zero based indexing */
+
+    for (int i = 0; i < 64; i++ )
+    {
+        PDS->pt[i] = 0;
+    }
+
+    PDS->maxfct = 1;		/* Maximum number of numerical factorizations.  */
+    PDS->mnum   = 1;         /* Which factorization to use. */
+
+    PDS->msglvl = 0;         /* Print statistical information  */
+    PDS->error  = 0;         /* Initialize error flag */
+    PDS->phase = 11;
+
+//    cout << PDS->ia[0] << ' ' << PDS->ia[1] << ' ' << PDS->ia[2] << endl;
+//    cout << PDS->ja[0] << ' ' << PDS->ja[1] << ' ' << PDS->ja[2] << ' ' << PDS->ja[3] << endl;
+//    cout << PDS->a[0] << ' ' << PDS->a[1] << ' ' << PDS->a[2] << ' ' << PDS->a[3] << endl;
+    PARDISO (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
+             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs), PDS->iparm, &(PDS->msglvl), &(PDS->ddum), &(PDS->ddum), &(PDS->error));
+
+//    cout << PDS->ia[0] << ' ' << PDS->ia[1] << ' ' << PDS->ia[2] << endl;
+//    cout << PDS->ja[0] << ' ' << PDS->ja[1] << ' ' << PDS->ja[2] << ' ' << PDS->ja[3] << endl;
+//    cout << PDS->a[0] << ' ' << PDS->a[1] << ' ' << PDS->a[2] << ' ' << PDS->a[3] << endl;
+
+    if ( PDS->error != 0 )
+    {
+        printf ("\nERROR during symbolic factorization: " "%i", PDS->error);
+        exit (1);
+    }
+//    printf ("\nReordering completed ... ");
+//    printf ("\nNumber of nonzeros in factors = " "%i", PDS->iparm[17]);
+//    printf ("\nNumber of factorization MFLOPS = " "%i", PDS->iparm[18]);
+/* -------------------------------------------------------------------- */
 
     return 0;
 }
@@ -2784,17 +2931,29 @@ int PARDISO_numerical_fact(PARDISO_var *PDS) {
     /* ..  Numerical factorization.                                         */
     /* -------------------------------------------------------------------- */
     PDS->phase = 22;
-    PDS->iparm[32] = 0; /* compute determinant */
+//    PDS->iparm[32] = 0; /* compute determinant */
 
 //    pardiso (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
 //             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs),
 //             PDS->iparm, &(PDS->msglvl), &(PDS->ddum), &(PDS->ddum), &(PDS->error), PDS->dparm);
 
-    if (PDS->error != 0) {
-        printf("\nERROR during numerical factorization: %d", PDS->error);
-        exit(2);
+    cout << PDS->ia[0] << ' ' << PDS->ia[1] << ' ' << PDS->ia[2] << endl;
+    cout << PDS->ja[0] << ' ' << PDS->ja[1] << ' ' << PDS->ja[2] << ' ' << PDS->ja[3] << endl;
+    cout << PDS->a[0] << ' ' << PDS->a[1] << ' ' << PDS->a[2] << ' ' << PDS->a[3] << endl;
+
+    PARDISO (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
+             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs), PDS->iparm, &(PDS->msglvl), &(PDS->ddum), &(PDS->ddum), &(PDS->error));
+
+    cout << PDS->ia[0] << ' ' << PDS->ia[1] << ' ' << PDS->ia[2] << endl;
+    cout << PDS->ja[0] << ' ' << PDS->ja[1] << ' ' << PDS->ja[2] << ' ' << PDS->ja[3] << endl;
+    cout << PDS->a[0] << ' ' << PDS->a[1] << ' ' << PDS->a[2] << ' ' << PDS->a[3] << endl;
+
+    if ( PDS->error != 0 )
+    {
+        printf ("\nERROR during numerical factorization: " "%i", PDS->error);
+        exit (2);
     }
-    printf("\nFactorization completed ...\n ");
+//    printf ("\nFactorization completed ... ");
 
     PDS->isInitialized = true;
     return 0;
@@ -2806,7 +2965,7 @@ int PARDISO_solve(PARDISO_var *PDS, mfloat *rhs) {
     /* -------------------------------------------------------------------- */
     PDS->phase = 33;
 
-    PDS->iparm[7] = 0;       /* Max numbers of iterative refinement steps. */
+//    PDS->iparm[7] = 0;       /* Max numbers of iterative refinement steps. */
 
     if (!(PDS->isInitialized)) {
         cout << "PARDISO not initialized" << endl;
@@ -2819,6 +2978,10 @@ int PARDISO_solve(PARDISO_var *PDS, mfloat *rhs) {
 //             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs),
 //             PDS->iparm, &(PDS->msglvl), PDS->b, PDS->x, &(PDS->error), PDS->dparm);
 
+    PARDISO (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
+             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs), PDS->iparm, &(PDS->msglvl), PDS->b, PDS->x, &(PDS->error));
+
+
     if (PDS->error != 0) {
         printf("\nERROR during solution: %d", PDS->error);
         exit(3);
@@ -2826,7 +2989,7 @@ int PARDISO_solve(PARDISO_var *PDS, mfloat *rhs) {
 
 //    printf("\nSolve completed ... ");
 //    printf("\nThe solution of the system is: ");
-//    for (int i = 0; i < 8; i++) {
+//    for (int i = 0; i < min(PDS->n, 5); i++) {
 //        printf("\n x [%d] = % f", i, PDS->x[i] );
 //    }
 //    printf ("\n");
@@ -2844,7 +3007,9 @@ int PARDISO_release(PARDISO_var *PDS) {
 //             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs),
 //             PDS->iparm, &(PDS->msglvl), &(PDS->ddum), &(PDS->ddum), &(PDS->error), PDS->dparm);
 
-    printf("\nRelease completed ... ");
+    PARDISO (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
+             &(PDS->n), &(PDS->ddum), PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs), PDS->iparm, &(PDS->msglvl), &(PDS->ddum), &(PDS->ddum), &(PDS->error));
+//    printf("\nRelease completed ... ");
 
     return 0;
 }
@@ -3095,73 +3260,161 @@ void SSN_sub_case1(QP_struct *qp) {
     auto time0 = time_now();
     int m = qp->m;
     int n = qp->n;
-    qp->proj_idx_sum[0] = (qp->proj_idx[0])? 0 : 1;
-    for (int i = 1; i < n; ++i) qp->proj_idx_sum[i] = (qp->proj_idx[i]) ? qp->proj_idx_sum[i-1] : (qp->proj_idx_sum[i-1] + 1);
-    get_eigen_sub_spMat_Q(qp->Q, qp->proj_idx, qp->tripletList_Qsub, qp->proj_idx_sum, &qp->Eigen_Q_sub);
-    for (int i = 0; i < n; ++i) qp->zero_idx[i] = !qp->proj_idx[i];
-    partial_CR_spMV(qp->Q, qp->SSN_grad, n, n, qp->SSN_sub_case1_temp1, qp->proj_idx, qp->zero_idx);
+    qp->proj_idx_sum[0] = (qp->proj_idx[0]) ? 0 : 1;
+    for (int i = 1; i < n; ++i)
+        qp->proj_idx_sum[i] = (qp->proj_idx[i]) ? qp->proj_idx_sum[i - 1] : (qp->proj_idx_sum[i - 1] + 1);
 
-    partial_axpy(-qp->sigma/(1+qp->tau/qp->sigma), qp->SSN_sub_case1_temp1, qp->SSN_grad, qp->SSN_r1_new, n, qp->proj_idx);
+    auto get_eigen_sub_time0 = time_now();
+    get_eigen_sub_spMat_Q(qp->Q, qp->proj_idx, qp->tripletList_Qsub, qp->proj_idx_sum, &qp->Eigen_Q_sub);
+    qp->get_eigen_sub_time += time_since(get_eigen_sub_time0);
+
+    for (int i = 0; i < n; ++i) qp->zero_idx[i] = !qp->proj_idx[i];
+
+    auto partial_CR_spMV_time0 = time_now();
+    partial_CR_spMV(qp->Q, qp->SSN_grad, n, n, qp->SSN_sub_case1_temp1, qp->proj_idx, qp->zero_idx);
+    qp->partial_CR_spMV_time += time_since(partial_CR_spMV_time0);
+
+    auto partial_axpy_time0 = time_now();
+    partial_axpy(-qp->sigma / (1 + qp->tau / qp->sigma), qp->SSN_sub_case1_temp1, qp->SSN_grad, qp->SSN_r1_new, n,
+                 qp->proj_idx);
+    qp->partial_axpy_time += time_since(partial_axpy_time0);
 
     qp->Eigen_Q_sub *= qp->sigma;
-    qp->Eigen_Q_sub.diagonal().array() += (1+qp->tau/qp->sigma);
+    qp->diagNUM.resize(qp->U_idx.number, 1);
+    qp->diagNUM.setConstant(1 + qp->tau / qp->sigma);
+    qp->Eigen_Q_sub += qp->diagNUM.asDiagonal();
 
     // if A exists
+    get_eigen_sub_time0 = time_now();
     get_eigen_sub_spMat_A(qp->A, qp->proj_idx, qp->tripletList_Qsub, qp->proj_idx_sum, &qp->Eigen_A_sub);
+    qp->get_eigen_sub_time += time_since(get_eigen_sub_time0);
 
+    partial_CR_spMV_time0 = time_now();
     partial_CR_spMV(qp->A, qp->SSN_sub_case1_temp1, m, n, qp->SSN_sub_case1_temp2, nullptr, qp->proj_idx);
     partial_CR_spMV(qp->A, qp->SSN_r1_new, m, n, qp->SSN_sub_case1_temp3, nullptr, qp->proj_idx);
+    qp->partial_CR_spMV_time += time_since(partial_CR_spMV_time0);
 
-    axpy(qp->sigma/(1+qp->tau/qp->sigma), qp->SSN_sub_case1_temp2, qp->SSN_sub_case1_temp3 ,qp->SSN_sub_case1_temp3, m);
-    axpy(1, qp->SSN_grad+n, qp->SSN_sub_case1_temp3, qp->SSN_sub_case1_temp3, m);
+    auto axpy_time0 = time_now();
+    axpy(qp->sigma / (1 + qp->tau / qp->sigma), qp->SSN_sub_case1_temp2, qp->SSN_sub_case1_temp3,
+         qp->SSN_sub_case1_temp3, m);
+    axpy(1, qp->SSN_grad + n, qp->SSN_sub_case1_temp3, qp->SSN_sub_case1_temp3, m);
+    qp->axpy_time += time_since(axpy_time0);
 
+    partial_CR_spMV_time0 = time_now();
     partial_CR_spMV(qp->AT, qp->SSN_sub_case1_temp3, n, m, qp->SSN_rhs, qp->proj_idx, nullptr);
+    qp->partial_CR_spMV_time += time_since(partial_CR_spMV_time0);
 
-    partial_axpby(-qp->sigma/(1+qp->tau/qp->sigma), qp->SSN_sub_case1_temp1, qp->sigma*qp->sigma/qp->tau, qp->SSN_rhs, qp->SSN_rhs, n, qp->proj_idx);
+    partial_axpy_time0 = time_now();
+    partial_axpby(-qp->sigma / (1 + qp->tau / qp->sigma), qp->SSN_sub_case1_temp1, qp->sigma * qp->sigma / qp->tau,
+                  qp->SSN_rhs, qp->SSN_rhs, n, qp->proj_idx);
     partial_axpy(1, qp->SSN_grad, qp->SSN_rhs, qp->SSN_rhs, n, qp->proj_idx);
+    qp->partial_axpy_time += time_since(partial_axpy_time0);
 
-    auto temp = qp->Eigen_A_sub.transpose()*qp->Eigen_A_sub;
+    auto eigen_matrix_mult_time0 = time_now();
+    auto temp = qp->Eigen_A_sub.transpose() * qp->Eigen_A_sub;
+    qp->eigen_matrix_mult_time += time_since(eigen_matrix_mult_time0);
 //    cout << temp.norm() << endl;
 
-    qp->Eigen_Q_sub += qp->sigma*qp->sigma*(1+qp->tau/qp->sigma)/qp->tau*(qp->Eigen_A_sub.transpose()*qp->Eigen_A_sub);
+    qp->Eigen_Q_sub += (qp->sigma * qp->sigma * (1 + qp->tau / qp->sigma) / qp->tau) * temp;
+
+
+//    qp->Eigen_Q_sub += qp->sigma*qp->sigma*(1+qp->tau/qp->sigma)/qp->tau*(qp->Eigen_A_sub.transpose()*qp->Eigen_A_sub);
 
 //    cout << qp->Eigen_Q_sub.coeff(1,1) << endl;
 //    cout << qp->Eigen_Q_sub.coeff(1,2) << endl;
 //    cout << qp->Eigen_Q_sub.norm() << endl;
 
-    qp->Eigen_rhs_w.resize(qp->U_idx.number, 1);
-    mfloat *p = qp->Eigen_rhs_w.data();
-    int count = 0;
-    int *mask = qp->U_idx.vec;
-    for (int i = 0; i < qp->U_idx.number; ++i)
-        p[i] = qp->SSN_rhs[mask[i]];
+    auto eigen_solver_time0 = time_now();
 
+    if (qp->use_eigen) {
+        qp->Eigen_rhs_w.resize(qp->U_idx.number, 1);
+        mfloat *p = qp->Eigen_rhs_w.data();
+        int count = 0;
+        int *mask = qp->U_idx.vec;
+        for (int i = 0; i < qp->U_idx.number; ++i)
+            p[i] = qp->SSN_rhs[mask[i]];
+
+        qp->Eigen_result_w.resize(qp->U_idx.number, 1);
+//    qp->Eigen_result_w.resize(qp->U_idx.number, 1);
 //    cout << norm2(p, qp->U_idx.number) << endl;
 
 
-    linear_solver_chol temp_solver;
+//        qp->Eigen_Q_sub.makeCompressed();
+        Eigen::SimplicialLLT<Eigen::SparseMatrix<double> > chol(qp->Eigen_Q_sub);
+//    auto solver_analyze_time0 = time_now();
+//    qp->Eigen_linear_IQ.LLTsolver.analyzePattern(qp->Eigen_Q_sub);
+//    qp->solver_analyze_time += time_since(solver_analyze_time0);
+//
+//    auto solver_factorize_time0 = time_now();
+//    qp->Eigen_linear_IQ.LLTsolver.factorize(qp->Eigen_Q_sub);
+//    qp->solver_factorize_time += time_since(solver_factorize_time0);
 
-    temp_solver.LLTsolver.analyzePattern(qp->Eigen_Q_sub);
-    temp_solver.LLTsolver.factorize(qp->Eigen_Q_sub);
+        auto solver_solve_time0 = time_now();
+        qp->Eigen_result_w = chol.solve(qp->Eigen_rhs_w);
+        qp->solver_solve_time += time_since(solver_solve_time0);
 
-    qp->Eigen_result_w.resize(qp->U_idx.number, 1);
+        ax(0, qp->SSN_dwdy, qp->SSN_dwdy, n);
+        p = qp->Eigen_result_w.data();
+        for (int i = 0; i < qp->U_idx.number; ++i) {
+            qp->SSN_dwdy[mask[i]] = p[i];
+        }
+    } else if (qp->use_mkl) {
+        int *mask = qp->U_idx.vec;
+        for (int i = 0; i < qp->U_idx.number; ++i)
+            qp->SSN_rhs_compressed[i] = qp->SSN_rhs[mask[i]];
 
-    qp->Eigen_result_w = temp_solver.LLTsolver.solve(qp->Eigen_rhs_w);
+//        sparseRowMatrix Q;
+//        sparseRowMatrix Q_upper;
+//        upper_sparseRowMatrix(Q, &Q_upper);
 
+//        if (qp->PDS_IQ != nullptr)
+//            PARDISO_release(qp->PDS_IQ);
+        qp->PDS_IQ = new PARDISO_var;
+        Eigen::SparseMatrix<double> temp = qp->Eigen_Q_sub.triangularView<Eigen::Lower>();
+//        cout << temp.nonZeros() << ' ' << qp->Eigen_Q_sub.nonZeros() << endl;
+//        auto rowStart =  qp->Eigen_Q_sub.outerIndexPtr();
+//        auto colIdx =  qp->Eigen_Q_sub.innerIndexPtr();
+//        auto val =  qp->Eigen_Q_sub.valuePtr();
+//        cout << rowStart[0] << ' ' << rowStart[1] << ' ' << rowStart[2] << endl;
+//        cout << colIdx[0] << ' ' << colIdx[1] << ' ' << colIdx[2] << ' ' << colIdx[3] << ' ' << colIdx[4] << endl;
+//        cout << val[0] << ' ' << val[1] << ' ' << val[2] << ' ' << val[3] << ' ' << val[4] << endl;
+        auto time0 = time_now();
+        PARDISO_init(qp->PDS_IQ,  &temp);
+        qp->solver_analyze_time += time_since(time0);
 
-    ax(0, qp->SSN_dwdy, qp->SSN_dwdy, n);
-    p = qp->Eigen_result_w.data();
-    for (int i = 0; i < qp->U_idx.number; ++i) {
-        qp->SSN_dwdy[mask[i]] = p[i];
+        time0 = time_now();
+        PARDISO_numerical_fact(qp->PDS_IQ);
+        qp->solver_factorize_time += time_since(time0);
+
+        time0 = time_now();
+        PARDISO_solve(qp->PDS_IQ, qp->SSN_rhs_compressed);
+        qp->solver_solve_time += time_since(time0);
+
+        ax(0, qp->SSN_dwdy, qp->SSN_dwdy, n);
+        auto p = qp->PDS_IQ->x;
+        for (int i = 0; i < qp->U_idx.number; ++i) {
+            qp->SSN_dwdy[mask[i]] = p[i];
+        }
+//        PARDISO_release(qp->PDS_IQ);
     }
 
+
+    qp->eigen_solver_time += time_since(eigen_solver_time0);
+
 //    cout << norm2(p, qp->U_idx.number) << endl;
 
+    partial_axpy_time0 = time_now();
     partial_axpy(1/(1+qp->tau/qp->sigma), qp->SSN_grad, qp->SSN_dwdy, qp->SSN_dwdy, n, qp->zero_idx);
+    qp->partial_axpy_time += time_since(partial_axpy_time0);
 
+
+    partial_CR_spMV_time0 = time_now();
     partial_CR_spMV(qp->A, qp->SSN_dwdy, m, n, qp->SSN_dwdy+n, nullptr, qp->proj_idx);
+    qp->partial_CR_spMV_time += time_since(partial_CR_spMV_time0);
 
+    axpy_time0 = time_now();
     axpby(qp->sigma/qp->tau, qp->SSN_sub_case1_temp3, -(1+qp->sigma/qp->tau), qp->SSN_dwdy+n, qp->SSN_dwdy+n, m);
+    qp->axpy_time += time_since(axpy_time0);
 
     qp->case1_time += time_since(time0);
 }
@@ -3184,4 +3437,73 @@ void test_eigen_segment_set() {
     myVector.segment(5, 3).setConstant(secondConstant);
 
     std::cout << "Vector: " << myVector.transpose() << std::endl;
+}
+
+void test_MKL_pardiso() {
+    sparseRowMatrix Q;
+    Q.value = new mfloat [4];
+    Q.nRow = 2; Q.nCol = 2;
+    Q.value[0] = 4; Q.value[1] = 2; Q.value[2] = 2; Q.value[3] = 6;
+    Q.rowStart = new int [3];
+    Q.rowStart[0] = 0; Q.rowStart[1] = 2; Q.rowStart[2] = 4;
+    Q.column = new int [4];
+    Q.column[0] = 0; Q.column[1] = 1; Q.column[2] = 0; Q.column[3] = 1;
+
+
+    auto eigen_Q = get_eigen_spMat(Q);
+    Eigen::SparseMatrix<double> temp = eigen_Q.triangularView<Eigen::Lower>();
+    auto p = new PARDISO_var;
+    auto rhs = new mfloat [2];
+    rhs[0] = 1.5; rhs[1] = 2.5;
+    auto temp_r = temp.outerIndexPtr();
+    auto temp_c = temp.innerIndexPtr();
+    auto temp_v = temp.valuePtr();
+//    cout << temp_r[0] << ' ' << temp_r[1] << ' ' << temp_r[2] << endl;
+//    cout << temp_c[0] << ' ' << temp_c[1] << ' ' << temp_c[2] << ' ' << temp_c[3] << endl;
+//    cout << temp_v[0] << ' ' << temp_v[1] << ' ' << temp_v[2] << ' ' << temp_v[3] << endl;
+
+    PARDISO_init(p, &temp);
+    cout << temp_r << ' ' << temp_r[0] << endl;
+//    cout << temp_r[0] << ' ' << temp_r[1] << ' ' << temp_r[2] << endl;
+//    cout << temp_c[0] << ' ' << temp_c[1] << ' ' << temp_c[2] << ' ' << temp_c[3] << endl;
+//    cout << temp_v[0] << ' ' << temp_v[1] << ' ' << temp_v[2] << ' ' << temp_v[3] << endl;
+    PARDISO_numerical_fact(p);
+    cout << temp_r << ' ' << temp_r[0] << endl;
+//    cout << temp_r[0] << ' ' << temp_r[1] << ' ' << temp_r[2] << endl;
+//    cout << temp_c[0] << ' ' << temp_c[1] << ' ' << temp_c[2] << ' ' << temp_c[3] << endl;
+//    cout << temp_v[0] << ' ' << temp_v[1] << ' ' << temp_v[2] << ' ' << temp_v[3] << endl;
+    PARDISO_solve(p, rhs);
+//    cout << temp_r[0] << ' ' << temp_r[1] << ' ' << temp_r[2] << endl;
+//    cout << temp_c[0] << ' ' << temp_c[1] << ' ' << temp_c[2] << ' ' << temp_c[3] << endl;
+//    cout << temp_v[0] << ' ' << temp_v[1] << ' ' << temp_v[2] << ' ' << temp_v[3] << endl;
+    printf("\nThe solution of the system is: ");
+    for (int i = 0; i < min(p->n, 5); i++) {
+        printf("\n x [%d] = % f", i, p->x[i] );
+    }
+    cout << endl;
+//    cout << Q.rowStart[0] << ' ' << Q.rowStart[1] << ' ' << Q.rowStart[2] << endl;
+//    cout << Q.column[0] << ' ' << Q.column[1] << ' ' << Q.column[2] << ' ' << Q.column[3] << endl;
+//    cout << Q.value[0] << ' ' << Q.value[1] << ' ' << Q.value[2] << ' ' << Q.value[3] << endl;
+//    PARDISO_release(p);
+}
+
+void upper_sparseRowMatrix(sparseRowMatrix A, sparseRowMatrix *A_upper) {
+    A_upper->nRow = A.nRow;
+    A_upper->nCol = A.nCol;
+    int nnz = A.rowStart[A.nRow];
+    A_upper->rowStart = new int [A.nRow+1];
+    A_upper->column = new int [(A.nRow+nnz)/2];
+    A_upper->value = new mfloat [(A.nRow+nnz)/2];
+    int count = 0;
+    A_upper->rowStart[0] = 0;
+    for (int i = 0; i < A.nRow; ++i) {
+        for (int j = A.rowStart[i]; j < A.rowStart[i+1]; ++j) {
+            if (A.column[j] >= i) {
+                A_upper->column[count] = A.column[j];
+                A_upper->value[count] = A.value[j];
+                count++;
+            }
+            A_upper->rowStart[i+1] = count;
+        }
+    }
 }
