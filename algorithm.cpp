@@ -658,15 +658,16 @@ void QP_solve(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat
     QP_space->u = u;
     QP_space->m = m;
     QP_space->n = n;
-    QP_space->input_para = para;
+//    QP_space->input_para = para;
 
+    load_para(QP_space, para);
     preprocessing(QP_space);
     sGSADMM_QP_init(QP_space);
 
     QP_space->time_solve_start = time_now();
 
     QP_space->iter = 1;
-    if (QP_space->maxADMMiter > 0)
+    if (QP_space->max_ADMM_iter > 0)
         sGSADMM_QP(QP_space);
 
     para_out->iter_ADMM = QP_space->iter;
@@ -681,7 +682,7 @@ void QP_solve(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat
 //        QP_space->y_old[i] = QP_space->y[i];
 //        QP_space->y0[i] = QP_space->y[i];
 //    }
-    if (QP_space->maxALMiter > 0)
+    if (QP_space->max_ALM_iter > 0)
         pALM_SSN_QP(QP_space);
 
     para_out->iter_pALM = QP_space->iter;
@@ -691,7 +692,7 @@ void QP_solve(sparseRowMatrix Q, sparseRowMatrix A, mfloat* b, mfloat* c, mfloat
 void sGSADMM_QP(QP_struct *QP_space) {
     sGSADMM_QP_compute_status(QP_space);
 
-    while (QP_space->iter <= QP_space->maxADMMiter) {
+    while (QP_space->iter <= QP_space->max_ADMM_iter) {
         sGSADMM_QP_print_status(QP_space);
         if (QP_space->sGSADMM_finish) break;
 
@@ -773,7 +774,6 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
         QP_space->y_old[i] = 0;
         QP_space->y_new[i] = 0;
     }
-    QP_space->gamma = QP_space->input_para.gamma;
 //    QP_space->sigma = 1.0;
     QP_space->update_y_rhs = new mfloat [m];
     QP_space->Qw_diff = new mfloat [n];
@@ -835,20 +835,6 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
 //    QP_space->kappa = 1; // [1e-4, 1e2] depends on problem.
     QP_space->sGSADMM_tol = 1e-4;
     QP_space->sGSADMM_finish = false;
-    QP_space->kappa = QP_space->input_para.kappa;
-
-//    if (QP_space->input_para.max_ADMM_iter != -1)
-        QP_space->maxADMMiter = QP_space->input_para.max_ADMM_iter;
-//    else
-//        QP_space->maxADMMiter = 1000;
-
-//    if (QP_space->input_para.max_ALM_iter != -1)
-        QP_space->maxALMiter = QP_space->input_para.max_ALM_iter;
-//    else
-//        QP_space->maxALMiter = 1000;
-
-//    if (QP_space->input_para.sigma > 0)
-        QP_space->sigma = QP_space->input_para.sigma;
 
 
 //    else
@@ -872,10 +858,15 @@ void sGSADMM_QP_init(QP_struct *QP_space) {
             }
         }
     }
-    Eigen_init(QP_space);
+    if (!QP_space->use_mkl)
+        Eigen_init(QP_space);
+    else
+        MKL_init(QP_space);
 
     if (QP_space->SSN_method == 1) {
-        QP_space->PDS_IQ = new PARDISO_var;
+        QP_space->PDS_Q2 = new PARDISO_var;
+        QP_space->PDS_Q2->x = new mfloat [n];
+//        QP_space->PDS_Q2->b = new mfloat [n];
 //        sparseRowMatrix Q_upper;
 //        upper_sparseRowMatrix(QP_space->Q, &QP_space->Q_upper);
 
@@ -990,11 +981,34 @@ void rescalingADMM(QP_struct *qp) {
         mfloat bc_ratio = bscale2 / cscale2;
         for (int r = 0; r < qp->n; ++r) {
             for (int j = qp->Q.rowStart[r]; j < qp->Q.rowStart[r+1]; ++j) {
+                if (qp->use_mkl && (qp->Q.column[j] == r))
+                    // recompute the diagonal elements of Q
+                    qp->MKL_IQ.value[qp->MKL_IQ.rowStart[r]] = qp->Q.value[j];
                 qp->Q.value[j] *= bc_ratio;
             }
         }
         qp->EigenQ *= bc_ratio;
-        sGSADMM_QP_refact_IQ(qp);
+        if (!qp->use_mkl) {
+            qp->EigenQ = get_eigen_spMat(qp->Q);
+            sGSADMM_QP_refact_IQ(qp);
+        } else {
+            for (int r = 0; r < qp->n; ++r) {
+                for (int j = qp->MKL_IQ.rowStart[r]; j < qp->MKL_IQ.rowStart[r+1]; ++j) {
+                    qp->MKL_IQ.value[j] *= bc_ratio;
+                }
+            }
+            mfloat inv_sigma_old = 1/qp->sigma_old;
+            mfloat inv_sigma = 1/qp->sigma;
+
+            int *rowStart = qp->MKL_IQ.rowStart;
+            mfloat *value = qp->MKL_IQ.value;
+#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(bc_ratio, n, rowStart, value, inv_sigma, inv_sigma_old)
+            for (int i = 0; i < n; ++i) {
+//                value[rowStart[i]] -= inv_sigma_old*bc_ratio;
+                value[rowStart[i]] += inv_sigma;
+            }
+            PARDISO_numerical_fact(qp->PDS_IQ);
+        }
         sGSADMM_QP_compute_status(qp);
 
         printf("rescale = %d: %d, %3.2e, %3.2e\n", qp->rescale, qp->iter, normP, normD);
@@ -1023,9 +1037,16 @@ void sGSADMM_QP_update_y_first(QP_struct *QP_space) {
 //
 //    axpy(-1, QP_space->A_times_z_Qw_c, rhs, rhs, m);
 
-    vMemcpy(rhs, m, QP_space->Eigen_rhs_y.data());
-    QP_space->Eigen_result_y = QP_space->Eigen_linear_AAT.LLTsolver.solve(QP_space->Eigen_rhs_y);
-    vMemcpy(QP_space->Eigen_result_y.data(), m, QP_space->y);
+    if (!QP_space->use_mkl) {
+        vMemcpy(rhs, m, QP_space->Eigen_rhs_y.data());
+        QP_space->Eigen_result_y = QP_space->Eigen_linear_AAT.LLTsolver.solve(QP_space->Eigen_rhs_y);
+        vMemcpy(QP_space->Eigen_result_y.data(), m, QP_space->y);
+    } else {
+        PARDISO_solve(QP_space->PDS_A, rhs);
+        vMemcpy(QP_space->PDS_A->x, m, QP_space->y);
+//        vMemcpy(rhs, m, QP_space->y);
+    }
+
 
     spMV_R(QP_space->AT, QP_space->y, n, m, QP_space->ATy);
     axpy(1, QP_space->ATy, QP_space->z_Qw_c, QP_space->Rd, n);
@@ -1066,9 +1087,15 @@ void sGSADMM_QP_update_y_second(QP_struct *QP_space) {
     axpby(-1, QP_space->A_times_z_Qw_c, 1/QP_space->sigma, QP_space->Rp, rhs, m);
 
 
-    vMemcpy(rhs, m, QP_space->Eigen_rhs_y.data());
-    QP_space->Eigen_result_y = QP_space->Eigen_linear_AAT.LLTsolver.solve(QP_space->Eigen_rhs_y);
-    vMemcpy(QP_space->Eigen_result_y.data(), m, QP_space->y);
+    if (!QP_space->use_mkl) {
+        vMemcpy(rhs, m, QP_space->Eigen_rhs_y.data());
+        QP_space->Eigen_result_y = QP_space->Eigen_linear_AAT.LLTsolver.solve(QP_space->Eigen_rhs_y);
+        vMemcpy(QP_space->Eigen_result_y.data(), m, QP_space->y);
+    } else {
+        PARDISO_solve(QP_space->PDS_A, rhs);
+        vMemcpy(QP_space->PDS_A->x, m, QP_space->y);
+//        vMemcpy(rhs, m, QP_space->y);
+    }
 
     spMV_R(QP_space->AT, QP_space->y, n, m, QP_space->ATy);
     axpy(1, QP_space->ATy, QP_space->z_Qw_c, QP_space->Rd, n);
@@ -1091,10 +1118,14 @@ void sGSADMM_QP_update_w_first(QP_struct *QP_space) {
 //    axpy(1/QP_space->sigma, QP_space->x, QP_space->z_ATy_c, rhs, n);
 
 //    cout << "w rhs " << norm2(rhs, n) << endl;
-    vMemcpy(rhs, n, QP_space->Eigen_rhs_w.data());
-    QP_space->Eigen_result_w = QP_space->Eigen_linear_IQ.LLTsolver.solve(QP_space->Eigen_rhs_w);
-    vMemcpy(QP_space->Eigen_result_w.data(), n, QP_space->w);
-
+    if (!QP_space->use_mkl) {
+        vMemcpy(rhs, n, QP_space->Eigen_rhs_w.data());
+        QP_space->Eigen_result_w = QP_space->Eigen_linear_IQ.LLTsolver.solve(QP_space->Eigen_rhs_w);
+        vMemcpy(QP_space->Eigen_result_w.data(), n, QP_space->w);
+    } else {
+        PARDISO_solve(QP_space->PDS_IQ, rhs);
+        vMemcpy(QP_space->PDS_IQ->x, n, QP_space->w);
+    }
 
     spMV_R(QP_space->Q, QP_space->w, n, n, QP_space->Qw);
 
@@ -1133,9 +1164,14 @@ void sGSADMM_QP_update_w_second(QP_struct *QP_space) {
 //    axpy(1/QP_space->sigma, QP_space->x, QP_space->z_ATy_c, rhs, n);
 
 
-    vMemcpy(rhs, n, QP_space->Eigen_rhs_w.data());
-    QP_space->Eigen_result_w = QP_space->Eigen_linear_IQ.LLTsolver.solve(QP_space->Eigen_rhs_w);
-    vMemcpy(QP_space->Eigen_result_w.data(), n, QP_space->w);
+    if (!QP_space->use_mkl) {
+        vMemcpy(rhs, n, QP_space->Eigen_rhs_w.data());
+        QP_space->Eigen_result_w = QP_space->Eigen_linear_IQ.LLTsolver.solve(QP_space->Eigen_rhs_w);
+        vMemcpy(QP_space->Eigen_result_w.data(), n, QP_space->w);
+    } else {
+        PARDISO_solve(QP_space->PDS_IQ, rhs);
+        vMemcpy(QP_space->PDS_IQ->x, n, QP_space->w);
+    }
 
 
     spMV_R(QP_space->Q, QP_space->w, n, n, QP_space->Qw);
@@ -1328,20 +1364,34 @@ void sGSADMM_QP_refact_IQ(QP_struct* QP_space) {
 //    QP_space->PDS_IQ->a = QP_space->IQ.value;
 //    QP_space->PDS_IQ->ia = QP_space->IQ.rowStart;
 //    QP_space->PDS_IQ->ja = QP_space->IQ.column;
-    mfloat inv_sigma_old = 1/QP_space->sigma_old;
-    mfloat inv_sigma = 1/QP_space->sigma;
+//    mfloat inv_sigma_old = 1/QP_space->sigma_old;
+//    mfloat inv_sigma = 1/QP_space->sigma;
 //    QP_space->EigenIQ -= inv_sigma_old*QP_space->EigenI;
 //    QP_space->EigenIQ += inv_sigma*QP_space->EigenI;
 //    for (int i = 0; i < QP_space->n; ++i) {
 //        QP_space->PDS_IQ->a[QP_space->PDS_IQ->ia[i]-1] += -inv_sigma_old + inv_sigma;
 
 //    }
-    QP_space->EigenQ = get_eigen_spMat(QP_space->Q);
 //    QP_space->EigenI.resize(QP_space->n, QP_space->n);
 //    QP_space->EigenI.setIdentity();
     QP_space->EigenIQ = 1/QP_space->sigma*QP_space->EigenIn + QP_space->EigenQ;
     QP_space->Eigen_linear_IQ.LLTsolver.factorize(QP_space->EigenIQ);
 //    PARDISO_numerical_fact(QP_space->PDS_IQ);
+}
+
+void MKL_refact(QP_struct* qp) {
+    mfloat inv_sigma_old = 1/qp->sigma_old;
+    mfloat inv_sigma = 1/qp->sigma;
+
+    int n = qp->n;
+    int *rowStart = qp->MKL_IQ.rowStart;
+    mfloat *value = qp->MKL_IQ.value;
+#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(n, rowStart, value, inv_sigma, inv_sigma_old)
+    for (int i = 0; i < n; ++i) {
+        value[rowStart[i]] -= inv_sigma_old;
+        value[rowStart[i]] += inv_sigma;
+    }
+    PARDISO_numerical_fact(qp->PDS_IQ);
 }
 
 int sGSADMM_print_iter(int iter) {
@@ -1369,7 +1419,7 @@ void sGSADMM_QP_print_status(QP_struct* QP_space) {
         cout << "sGSADMM error is " << *max_element(QP_space->inf.begin(), QP_space->inf.end()) << endl;
     }
     mfloat time_solve_now = time_since(QP_space->time_solve_start);
-    if ((QP_space->iter % sGSADMM_print_iter(QP_space->iter) == 1) || (QP_space->sGSADMM_finish) || (QP_space->iter == QP_space->maxADMMiter)) {
+    if ((QP_space->iter % sGSADMM_print_iter(QP_space->iter) == 1) || (QP_space->sGSADMM_finish) || (QP_space->iter == QP_space->max_ADMM_iter)) {
 //    if (1) {
         printf("%4d    %7.6e   %7.6e    %2.1e    %2.1e    %2.1e    %2.1e    %2.1e    %2.1e    %2.1e    %3.2f\n", QP_space->iter, QP_space->primal_obj_org, QP_space->dual_obj_org, QP_space->inf_g_org, QP_space->inf_p_org, QP_space->inf_d_org, QP_space->inf_Q_org, QP_space->inf_C_org, QP_space->sigma, QP_space->tau, time_solve_now);
     }
@@ -1398,6 +1448,7 @@ void pALM_QP_print_status(QP_struct* QP_space) {
             cout << "solver_analyze_time = " << QP_space->solver_analyze_time << endl;
             cout << "solver_factorize_time = " << QP_space->solver_factorize_time << endl;
             cout << "solver_solve_time = " << QP_space->solver_solve_time << endl;
+            cout << "factorize_times = " << QP_space->fact_times << endl;
         }
 
     }
@@ -1505,7 +1556,7 @@ void pALM_SSN_QP(QP_struct* QP_space) {
     pALM_QP_compute_status(QP_space);
     pALM_QP_print_status(QP_space);
     mfloat normGrad_speed;
-    while ((QP_space->iter < QP_space->maxALMiter) && (!QP_space->pALM_finish) ) {
+    while ((QP_space->iter < QP_space->max_ALM_iter) && (!QP_space->pALM_finish) ) {
         mfloat tau_old = QP_space->tau;
         QP_space->tau = max(1e-12, QP_space->kappa*pow(QP_space->iter, -2.5)) * QP_space->sigma;
         // SSN
@@ -2339,7 +2390,10 @@ void update_sigma(QP_struct *QP_space) {
         }
 
         if (abs(QP_space->sigma_old - QP_space->sigma) > 1e-10) {
-            sGSADMM_QP_refact_IQ(QP_space);
+            if (!QP_space->use_mkl)
+                sGSADMM_QP_refact_IQ(QP_space);
+            else
+                MKL_refact(QP_space);
         }
 #ifdef sigma_debug
         if (use_inforg)
@@ -2476,7 +2530,13 @@ void preprocessing(QP_struct *qp) {
 
     qp->cA = new mfloat[qp->n];
     qp->rA = new mfloat[qp->m];
-    ruiz_equilibration(qp->A, &qp->A, qp->AT, &qp->AT, qp->cA, qp->rA);
+    if (qp->use_scale)
+        ruiz_equilibration(qp->A, &qp->A, qp->AT, &qp->AT, qp->cA, qp->rA);
+    else {
+        vSet(qp->cA, qp->n, 1.0);
+        vSet(qp->rA, qp->m, 1.0);
+    }
+
     xdoty(qp->b, qp->rA, qp->b, qp->m, true);
     xdoty(qp->c, qp->cA, qp->c, qp->n, true);
     xdoty(qp->l, qp->cA, qp->l, qp->n, false);
@@ -2492,7 +2552,7 @@ void preprocessing(QP_struct *qp) {
 
     qp->bscale = max(1.0, norm2(qp->b, qp->m));
     qp->cscale = max(1.0, norm2(qp->c, qp->n));
-    cout << qp->bscale * qp->cscale << endl;
+//    cout << qp->bscale * qp->cscale << endl;
     mfloat invbscale = 1/qp->bscale;
     mfloat invcscale = 1/qp->cscale;
 
@@ -2656,7 +2716,7 @@ void Eigen_init(QP_struct *QP_space) {
     QP_space->Eigen_result_dwdy.resize(QP_space->n+QP_space->m, 1);
 //    cout << EigenA << endl;
 //    cout << EigenAAT << endl;
-    cout << QP_space->Q.value[0] << endl;
+//    cout << QP_space->Q.value[0] << endl;
     QP_space->EigenQ = get_eigen_spMat(QP_space->Q);
     QP_space->EigenIn.resize(QP_space->n, QP_space->n);
     QP_space->EigenIn.setIdentity();
@@ -2670,23 +2730,23 @@ void Eigen_init(QP_struct *QP_space) {
     QP_space->Eigen_linear_IQ.LLTsolver.factorize(QP_space->EigenIQ);
 }
 
-int PARDISO_init(PARDISO_var *PDS, sparseRowMatrix A) {
-    PDS->n = A.nRow;
-    if (A.nRow != A.nCol) {
+int PARDISO_init(PARDISO_var *PDS, sparseRowMatrix *A) {
+    PDS->n = A->nRow;
+    if (A->nRow != A->nCol) {
         cout << "not square matrix" << endl;
         return 0;
     }
-    int nnz = A.rowStart[A.nRow];
+    int nnz = A->rowStart[A->nRow];
     PDS->debug = false;
 //    PDS->ia = A.rowStart;
-    PDS->ia = (int *) malloc(sizeof(int) * (A.nRow+1));
-    PDS->ja = (int *) malloc(sizeof(int) * nnz);
-    PDS->a = (mfloat *) malloc(sizeof(mfloat) * nnz);
-    vMemcpy(A.rowStart, A.nRow+1, PDS->ia);
-//    PDS->ja = A.column;
-    vMemcpy(A.column, nnz, PDS->ja);
-//    PDS->a = A.value;
-    vMemcpy(A.value, nnz, PDS->a);
+    PDS->ia = A->rowStart;
+    PDS->ja = A->column;
+    PDS->a = A->value;
+//    vMemcpy(A.rowStart, A.nRow+1, PDS->ia);
+////    PDS->ja = A.column;
+//    vMemcpy(A.column, nnz, PDS->ja);
+////    PDS->a = A.value;
+//    vMemcpy(A.value, nnz, PDS->a);
     PDS->mtype = -2;        /* Real symmetric matrix */
 
     /* RHS and solution vectors. */
@@ -2699,12 +2759,12 @@ int PARDISO_init(PARDISO_var *PDS, sparseRowMatrix A) {
         PDS->iparm[i] = 0;
     }
     PDS->iparm[0] = 1;         /* No solver default */
-    PDS->iparm[1] = 2;         /* Fill-in reordering from METIS */
+    PDS->iparm[1] = 3;         /* Fill-in reordering from METIS */
     PDS->iparm[3] = 0;         /* No iterative-direct algorithm */
     PDS->iparm[4] = 0;         /* No user fill-in reducing permutation */
     PDS->iparm[5] = 0;         /* Write solution into x */
     PDS->iparm[6] = 0;         /* Not in use */
-    PDS->iparm[7] = 2;         /* Max numbers of iterative refinement steps */
+    PDS->iparm[7] = 0;         /* Max numbers of iterative refinement steps */
     PDS->iparm[8] = 0;         /* Not in use */
     PDS->iparm[9] = 13;        /* Perturb the pivot elements with 1E-13 */
     PDS->iparm[10] = 1;        /* Use nonsymmetric permutation and scaling MPS */
@@ -2759,7 +2819,7 @@ int PARDISO_init(PARDISO_var *PDS, sparseRowMatrix A) {
     PDS->maxfct = 1;		/* Maximum number of numerical factorizations.  */
     PDS->mnum   = 1;         /* Which factorization to use. */
 
-    PDS->msglvl = 1;         /* Print statistical information  */
+    PDS->msglvl = 0;         /* Print statistical information  */
     PDS->error  = 0;         /* Initialize error flag */
 
 /* -------------------------------------------------------------------- */
@@ -2827,9 +2887,9 @@ int PARDISO_init(PARDISO_var *PDS, sparseRowMatrix A) {
         printf ("\nERROR during symbolic factorization: " "%i", PDS->error);
         exit (1);
     }
-    printf ("\nReordering completed ... ");
-    printf ("\nNumber of nonzeros in factors = " "%i", PDS->iparm[17]);
-    printf ("\nNumber of factorization MFLOPS = " "%i", PDS->iparm[18]);
+//    printf ("\nReordering completed ... ");
+//    printf ("\nNumber of nonzeros in factors = " "%i", PDS->iparm[17]);
+//    printf ("\nNumber of factorization MFLOPS = " "%i", PDS->iparm[18]);
 /* -------------------------------------------------------------------- */
 
     return 0;
@@ -2862,7 +2922,6 @@ int PARDISO_init(PARDISO_var *PDS, Eigen::SparseMatrix<double> *A) {
     PDS->mtype = -2;        /* Real symmetric matrix */
 
     /* RHS and solution vectors. */
-    PDS->x = (mfloat *) malloc(sizeof(mfloat) * PDS->n);
 
     PDS->nrhs = 1;          /* Number of right hand sides. */
 
@@ -2937,16 +2996,16 @@ int PARDISO_numerical_fact(PARDISO_var *PDS) {
 //             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs),
 //             PDS->iparm, &(PDS->msglvl), &(PDS->ddum), &(PDS->ddum), &(PDS->error), PDS->dparm);
 
-    cout << PDS->ia[0] << ' ' << PDS->ia[1] << ' ' << PDS->ia[2] << endl;
-    cout << PDS->ja[0] << ' ' << PDS->ja[1] << ' ' << PDS->ja[2] << ' ' << PDS->ja[3] << endl;
-    cout << PDS->a[0] << ' ' << PDS->a[1] << ' ' << PDS->a[2] << ' ' << PDS->a[3] << endl;
+//    cout << PDS->ia[0] << ' ' << PDS->ia[1] << ' ' << PDS->ia[2] << endl;
+//    cout << PDS->ja[0] << ' ' << PDS->ja[1] << ' ' << PDS->ja[2] << ' ' << PDS->ja[3] << endl;
+//    cout << PDS->a[0] << ' ' << PDS->a[1] << ' ' << PDS->a[2] << ' ' << PDS->a[3] << endl;
 
     PARDISO (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
              &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs), PDS->iparm, &(PDS->msglvl), &(PDS->ddum), &(PDS->ddum), &(PDS->error));
 
-    cout << PDS->ia[0] << ' ' << PDS->ia[1] << ' ' << PDS->ia[2] << endl;
-    cout << PDS->ja[0] << ' ' << PDS->ja[1] << ' ' << PDS->ja[2] << ' ' << PDS->ja[3] << endl;
-    cout << PDS->a[0] << ' ' << PDS->a[1] << ' ' << PDS->a[2] << ' ' << PDS->a[3] << endl;
+//    cout << PDS->ia[0] << ' ' << PDS->ia[1] << ' ' << PDS->ia[2] << endl;
+//    cout << PDS->ja[0] << ' ' << PDS->ja[1] << ' ' << PDS->ja[2] << ' ' << PDS->ja[3] << endl;
+//    cout << PDS->a[0] << ' ' << PDS->a[1] << ' ' << PDS->a[2] << ' ' << PDS->a[3] << endl;
 
     if ( PDS->error != 0 )
     {
@@ -2971,8 +3030,9 @@ int PARDISO_solve(PARDISO_var *PDS, mfloat *rhs) {
         cout << "PARDISO not initialized" << endl;
         return 0;
     }
-    PDS->b = new mfloat [PDS->n];
-    vMemcpy(rhs, PDS->n, PDS->b);
+
+    PDS->b = rhs;
+//    vMemcpy(rhs, PDS->n, PDS->b);
 
 //    pardiso (PDS->pt, &(PDS->maxfct), &(PDS->mnum), &(PDS->mtype), &(PDS->phase),
 //             &(PDS->n), PDS->a, PDS->ia, PDS->ja, &(PDS->idum), &(PDS->nrhs),
@@ -3012,91 +3072,6 @@ int PARDISO_release(PARDISO_var *PDS) {
 //    printf("\nRelease completed ... ");
 
     return 0;
-}
-
-void run_bin(const char* file_name) {
-#ifdef NUM_THREADS_OpenMP
-    omp_set_num_threads(NUM_THREADS_OpenMP);
-    printf("PARALLEL Switch On: %d threads\n", NUM_THREADS_OpenMP);
-#endif
-    mfloat *size = new mfloat [4];
-    read_bin(file_name, size, 4);
-
-    int m = static_cast<int>(size[0]);
-    int n = static_cast<int>(size[1]);
-    int nnz_Q = static_cast<int>(size[2]);
-    int nnz_A = static_cast<int>(size[3]);
-
-    cout << "m = " << m << " n = " << n << endl;
-    cout << "nnz_Q = " << nnz_Q << " nnz_A = " << nnz_A << endl;
-
-    int total = 4+nnz_Q*2+n+1+nnz_A*2+m+1+3*n+m;
-    mfloat *read = new mfloat [total];
-    read_bin(file_name, read, total);
-
-    mfloat *data = read + 4;
-
-    mfloat *Q_value = new mfloat [nnz_Q];
-    mfloat *Q_rowStart_d = new mfloat [n+1];
-    mfloat *Q_column_d = new mfloat [nnz_Q];
-    mfloat *A_value = new mfloat [nnz_A];
-    mfloat *A_rowStart_d = new mfloat [m+1];
-    mfloat *A_column_d = new mfloat [nnz_A];
-    mfloat *b = new mfloat [m];
-    mfloat *c = new mfloat [n];
-    mfloat *L = new mfloat [n];
-    mfloat *U = new mfloat [n];
-
-    vMemcpy(data, nnz_Q, Q_value);
-    vMemcpy(data+nnz_Q, n+1, Q_rowStart_d);
-    vMemcpy(data+nnz_Q+n+1, nnz_Q, Q_column_d);
-    vMemcpy(data+nnz_Q+n+1+nnz_Q, nnz_A, A_value);
-    vMemcpy(data+nnz_Q+n+1+nnz_Q+nnz_A, m+1, A_rowStart_d);
-    vMemcpy(data+nnz_Q+n+1+nnz_Q+nnz_A+m+1, nnz_A, A_column_d);
-    vMemcpy(data+nnz_Q+n+1+nnz_Q+nnz_A+m+1+nnz_A, m, b);
-    vMemcpy(data+nnz_Q+n+1+nnz_Q+nnz_A+m+1+nnz_A+m, n, c);
-    vMemcpy(data+nnz_Q+n+1+nnz_Q+nnz_A+m+1+nnz_A+m+n, n, L);
-    vMemcpy(data+nnz_Q+n+1+nnz_Q+nnz_A+m+1+nnz_A+m+n+n, n, U);
-
-    int *Q_rowStart = new int [n+1];
-    int *Q_column = new int [nnz_Q];
-    int *A_rowStart = new int [m+1];
-    int *A_column = new int [nnz_A];
-    for (int i = 0; i < n+1; i++) {
-        Q_rowStart[i] = static_cast<int>(Q_rowStart_d[i]);
-    }
-    for (int i = 0; i < nnz_Q; i++) {
-        Q_column[i] = static_cast<int>(Q_column_d[i]);
-    }
-    for (int i = 0; i < m+1; i++) {
-        A_rowStart[i] = static_cast<int>(A_rowStart_d[i]);
-    }
-    for (int i = 0; i < nnz_A; i++) {
-        A_column[i] = static_cast<int>(A_column_d[i]);
-    }
-
-    input_parameters *ip = new input_parameters;
-    ip->max_ADMM_iter = 1000;
-    ip->max_ALM_iter = 100;
-    ip->sigma = 1;
-    ip->kappa = 1e-4;
-    ip->gamma = 1.95;
-
-    sparseRowMatrix Q,A;
-    Q.nRow = n;
-    Q.nCol = n;
-    Q.value = Q_value;
-    Q.rowStart = Q_rowStart;
-    Q.column = Q_column;
-    A.nRow = m;
-    A.nCol = n;
-    A.value = A_value;
-    A.rowStart = A_rowStart;
-    A.column = A_column;
-
-    output_parameters *op = new output_parameters;
-    QP_solve(Q, A, b, c, L, U, m, n, *ip, op);
-
 }
 
 Eigen::SparseMatrix<mfloat> concat_4_spMat(Eigen::SparseMatrix<mfloat> A, Eigen::SparseMatrix<mfloat> B, Eigen::SparseMatrix<mfloat> C, Eigen::SparseMatrix<mfloat> D) {
@@ -3326,7 +3301,7 @@ void SSN_sub_case1(QP_struct *qp) {
 
     auto eigen_solver_time0 = time_now();
 
-    if (qp->use_eigen) {
+    if (!qp->use_mkl) {
         qp->Eigen_rhs_w.resize(qp->U_idx.number, 1);
         mfloat *p = qp->Eigen_rhs_w.data();
         int count = 0;
@@ -3360,6 +3335,7 @@ void SSN_sub_case1(QP_struct *qp) {
         }
     } else if (qp->use_mkl) {
         int *mask = qp->U_idx.vec;
+#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) shared(mask, qp) default(none)
         for (int i = 0; i < qp->U_idx.number; ++i)
             qp->SSN_rhs_compressed[i] = qp->SSN_rhs[mask[i]];
 
@@ -3369,7 +3345,7 @@ void SSN_sub_case1(QP_struct *qp) {
 
 //        if (qp->PDS_IQ != nullptr)
 //            PARDISO_release(qp->PDS_IQ);
-        qp->PDS_IQ = new PARDISO_var;
+//        qp->PDS_IQ = new PARDISO_var;
         Eigen::SparseMatrix<double> temp = qp->Eigen_Q_sub.triangularView<Eigen::Lower>();
 //        cout << temp.nonZeros() << ' ' << qp->Eigen_Q_sub.nonZeros() << endl;
 //        auto rowStart =  qp->Eigen_Q_sub.outerIndexPtr();
@@ -3379,22 +3355,25 @@ void SSN_sub_case1(QP_struct *qp) {
 //        cout << colIdx[0] << ' ' << colIdx[1] << ' ' << colIdx[2] << ' ' << colIdx[3] << ' ' << colIdx[4] << endl;
 //        cout << val[0] << ' ' << val[1] << ' ' << val[2] << ' ' << val[3] << ' ' << val[4] << endl;
         auto time0 = time_now();
-        PARDISO_init(qp->PDS_IQ,  &temp);
+        PARDISO_init(qp->PDS_Q2,  &temp);
         qp->solver_analyze_time += time_since(time0);
+//        mkl_sparse_convert_csr()
 
         time0 = time_now();
-        PARDISO_numerical_fact(qp->PDS_IQ);
+        PARDISO_numerical_fact(qp->PDS_Q2);
         qp->solver_factorize_time += time_since(time0);
 
         time0 = time_now();
-        PARDISO_solve(qp->PDS_IQ, qp->SSN_rhs_compressed);
+        PARDISO_solve(qp->PDS_Q2, qp->SSN_rhs_compressed);
         qp->solver_solve_time += time_since(time0);
 
         ax(0, qp->SSN_dwdy, qp->SSN_dwdy, n);
-        auto p = qp->PDS_IQ->x;
+        auto p = qp->PDS_Q2->x;
+#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) shared(mask, qp, p) default(none)
         for (int i = 0; i < qp->U_idx.number; ++i) {
             qp->SSN_dwdy[mask[i]] = p[i];
         }
+        qp->fact_times++;
 //        PARDISO_release(qp->PDS_IQ);
     }
 
@@ -3480,7 +3459,7 @@ void test_MKL_pardiso() {
     for (int i = 0; i < min(p->n, 5); i++) {
         printf("\n x [%d] = % f", i, p->x[i] );
     }
-    cout << endl;
+//    cout << endl;
 //    cout << Q.rowStart[0] << ' ' << Q.rowStart[1] << ' ' << Q.rowStart[2] << endl;
 //    cout << Q.column[0] << ' ' << Q.column[1] << ' ' << Q.column[2] << ' ' << Q.column[3] << endl;
 //    cout << Q.value[0] << ' ' << Q.value[1] << ' ' << Q.value[2] << ' ' << Q.value[3] << endl;
@@ -3506,4 +3485,59 @@ void upper_sparseRowMatrix(sparseRowMatrix A, sparseRowMatrix *A_upper) {
             A_upper->rowStart[i+1] = count;
         }
     }
+}
+
+void load_para(QP_struct *qp, input_parameters para) {
+    qp->kappa = para.kappa;
+    qp->gamma = para.gamma;
+    qp->max_ADMM_iter = para.max_ADMM_iter;
+    qp->max_ALM_iter = para.max_ALM_iter;
+    qp->sigma = para.sigma;
+    qp->use_mkl = para.use_mkl;
+    qp->use_scale = para.use_scale;
+
+    cout << "kappa: " << qp->kappa << endl;
+    cout << "gamma: " << qp->gamma << endl;
+    cout << "max_ADMM_iter: " << qp->max_ADMM_iter << endl;
+    cout << "max_ALM_iter: " << qp->max_ALM_iter << endl;
+    cout << "sigma: " << qp->sigma << endl;
+    cout << "use_mkl: " << qp->use_mkl << endl;
+    cout << "use_scale: " << qp->use_scale << endl;
+}
+
+void vSet(mfloat *x, int len, mfloat val) {
+#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(len, x, val)
+    for (int i = 0; i < len; ++i) {
+        x[i] = val;
+    }
+}
+
+void MKL_init(QP_struct *qp) {
+    mfloat inv_sigma = 1/qp->sigma;
+    int n = qp->n, m = qp->m;
+
+    qp->PDS_A = new PARDISO_var;
+    qp->PDS_A->x = new mfloat [m];
+//    qp->PDS_A->b = new mfloat [m];
+    qp->EigenA = get_eigen_spMat(qp->A);
+    qp->EigenAT = get_eigen_spMat(qp->AT);
+    qp->EigenAAT = qp->EigenA*qp->EigenA.transpose();
+    qp->EigenAAT = qp->EigenAAT.triangularView<Eigen::Lower>();
+
+    PARDISO_init(qp->PDS_A, &qp->EigenAAT);
+    PARDISO_numerical_fact(qp->PDS_A);
+
+    upper_sparseRowMatrix(qp->Q, &qp->MKL_IQ);
+    int *rowStart = qp->MKL_IQ.rowStart;
+    mfloat *value = qp->MKL_IQ.value;
+#pragma omp parallel for num_threads(NUM_THREADS_OpenMP) default(none) shared(n, rowStart, value, inv_sigma)
+    for (int i = 0; i < n; ++i) {
+        value[rowStart[i]] += inv_sigma;
+    }
+    qp->PDS_IQ = new PARDISO_var;
+    qp->PDS_IQ->x = new mfloat [n];
+//    qp->PDS_IQ->b = new mfloat [n];
+    PARDISO_init(qp->PDS_IQ, &qp->MKL_IQ);
+    PARDISO_numerical_fact(qp->PDS_IQ);
+
 }

@@ -25,6 +25,7 @@
 
 #include "mkl_pardiso.h"
 #include "mkl_types.h"
+#include <mkl.h>
 
 #define mfloat double
 #define NUM_THREADS_OpenMP 8
@@ -117,6 +118,8 @@ typedef struct input_parameters {
     mfloat sigma = 1.0;
     double kappa = 1.0;
     mfloat gamma = 1.618;
+    int use_scale = 1;
+    int use_mkl = 1;
 } input_parameters;
 
 typedef struct output_parameters {
@@ -139,7 +142,7 @@ typedef struct QP_struct {
     // work variables
     sparseRowMatrix AT, AAT, IQ;
     mfloat *w, *y, *z, *x, sigma, gamma, sigma_old, tau;
-    PARDISO_var *PDS_IQ, *PDS_A;
+    PARDISO_var *PDS_IQ, *PDS_A, *PDS_Q2;
     mfloat *update_y_rhs, *Qw, *ATy, *Ax, *Rd, *Rp, *z_Qw_c, *A_times_z_Qw_c, *dz, *Qx, *Qz, *Az;
     mfloat *z_new, *y_old, *Qw_ATy_c;
     mfloat *w_bar, *y_bar;
@@ -155,12 +158,12 @@ typedef struct QP_struct {
     bool sGSADMM_finish;
     bool pALM_finish = false;
 
-    input_parameters input_para;
+//    input_parameters input_para;
     Eigen::SparseMatrix<mfloat> EigenIn, EigenIm, EigenQ, EigenIQ;
     Eigen::SparseMatrix<mfloat> upperMatQ;
     linear_solver_chol Eigen_linear_AAT, Eigen_linear_IQ;
     linear_solver_lu Eigen_linear_hessian_full_idx;
-    int iter, maxADMMiter, maxALMiter;
+    int iter, max_ADMM_iter, max_ALM_iter;
     Eigen::VectorX<mfloat> Eigen_rhs_w, Eigen_rhs_y, Eigen_rhs_dwdy, Eigen_result_w, Eigen_result_y, Eigen_result_dwdy;
     bool *proj_idx;
     spVec_int U_idx;
@@ -270,8 +273,11 @@ typedef struct QP_struct {
     double solver_analyze_time = 0.0;
     double solver_factorize_time = 0.0;
     double solver_solve_time = 0.0;
-    bool use_eigen = false;
-    bool use_mkl = true;
+//    bool use_eigen = false;
+    int use_mkl = true;
+    int use_scale = true;
+    int fact_times = 0;
+    sparseRowMatrix MKL_IQ;
 } QP_struct;
 
 void Eigen_init(QP_struct *QP_space);
@@ -552,7 +558,7 @@ void Runexperiment_xTy();
 
 void writeCOO();
 
-void run_bin(const char* file_name);
+//void run_bin(const char* file_name);
 
 void line_search(QP_struct *qp);
 
@@ -589,3 +595,11 @@ void test_eigen_segment_set();
 void test_MKL_pardiso();
 
 void upper_sparseRowMatrix(sparseRowMatrix A, sparseRowMatrix *A_upper);
+
+void load_para(QP_struct *qp, input_parameters para);
+
+void vSet(mfloat *x, int len, mfloat val);
+
+void MKL_init(QP_struct *qp);
+
+void MKL_refact(QP_struct* qp);
